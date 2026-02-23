@@ -216,8 +216,11 @@ function Test-ShouldRemoveManagedLink {
   # Safe removal: remove only if destination still matches what we managed.
   if (!(Test-Path -LiteralPath $Destination)) { return $false }
 
-  $mode = ([string]($StateEntry.mode ?? "")).ToLower()
-  $from = Resolve-DotmngrPath -Path ([string]($StateEntry.from ?? ""))
+  $modeValue = $StateEntry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+  $fromValue = $StateEntry | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
+  
+  $mode = if ($modeValue) { ([string]$modeValue).ToLower() } else { "" }
+  $from = if ($fromValue) { Resolve-DotmngrPath -Path ([string]$fromValue) } else { "" }
 
   if ($mode -eq "symlink" -or $mode -eq "junction") {
     if (-not (Test-ReparsePoint -Path $Destination)) { return $false }
@@ -260,9 +263,24 @@ $config = (Get-Content -LiteralPath $ConfigPath -Raw) | ConvertFrom-Json
 if (-not $config.global)   { throw "Config must contain 'global'." }
 if (-not $config.packages) { throw "Config must contain 'packages'." }
 
-$globalMode    = if ($config.global.mode) { ([string]$config.global.mode).ToLower() } else { "symlink" }
-$globalTrash   = [bool]$config.global.trash
-$globalTrashDir = Resolve-DotmngrPath -Path ([string]$config.global.trashDir)
+# Safely access mode property with diagnostics
+$modeProperty = $config.global | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+if ($null -eq $modeProperty) {
+  Write-Host "WARN: global.mode not found or empty. Available properties in global:"
+  $config.global | Get-Member -MemberType NoteProperty | ForEach-Object { Write-Host "  - $($_.Name)" }
+  $globalMode = "symlink"
+} else {
+  $globalMode = ([string]$modeProperty).ToLower()
+}
+
+$globalTrash   = [bool]($config.global | Select-Object -ExpandProperty trash -ErrorAction SilentlyContinue)
+$globalTrashDirVal = $config.global | Select-Object -ExpandProperty trashDir -ErrorAction SilentlyContinue
+$globalTrashDir = if ($globalTrashDirVal) { Resolve-DotmngrPath -Path ([string]$globalTrashDirVal) } else { "" }
+
+# Create trash dir upfront if needed
+if ($globalTrash -and $globalTrashDir) {
+  New-DirectoryIfMissing -Path $globalTrashDir
+}
 
 # ---------------- State file location ----------------
 
@@ -283,7 +301,10 @@ $state = [pscustomobject]@{
 if (Test-Path -LiteralPath $statePath) {
   try {
     $loaded = (Get-Content -LiteralPath $statePath -Raw) | ConvertFrom-Json
-    if ($loaded -and $loaded.packages) { $state.packages = $loaded.packages }
+    if ($loaded) { 
+      $loadedPackages = $loaded | Select-Object -ExpandProperty packages -ErrorAction SilentlyContinue
+      if ($loadedPackages) { $state.packages = $loadedPackages }
+    }
   } catch {
     Write-Host "WARN: couldn't parse state file, starting fresh: $statePath"
   }
@@ -299,13 +320,25 @@ function Get-StatePackage {
 
   if (-not $state.packages) { $state.packages = @{} }
 
-  if (-not ($state.packages.PSObject.Properties.Name -contains $Name)) {
+  $hasPackage = $false
+  foreach ($prop in $state.packages.PSObject.Properties) {
+    if ($prop.Name -eq $Name) { $hasPackage = $true; break }
+  }
+  
+  if (-not $hasPackage) {
     $state.packages | Add-Member -MemberType NoteProperty -Name $Name -Value ([pscustomobject]@{
       updated = $null
       links   = @{}
     })
   }
-  return $state.packages.$Name
+  
+  # Return using safe property access
+  foreach ($prop in $state.packages.PSObject.Properties) {
+    if ($prop.Name -eq $Name) { return $prop.Value }
+  }
+  
+  # Fallback (should not reach here, but safe)
+  return [pscustomobject]@{ updated = $null; links = @{} }
 }
 
 function Get-StatePackageLinks {
@@ -317,8 +350,13 @@ function Get-StatePackageLinks {
   )
 
   $pkgState = Get-StatePackage -Name $Name
-  if (-not $pkgState.links) { $pkgState.links = @{} }
-  return $pkgState.links
+  if (-not $pkgState.links) { 
+    $pkgState | Add-Member -MemberType NoteProperty -Name links -Value @{} -ErrorAction SilentlyContinue
+  }
+  
+  $linksVal = $pkgState | Select-Object -ExpandProperty links -ErrorAction SilentlyContinue
+  if ($null -eq $linksVal) { $linksVal = @{} }
+  return $linksVal
 }
 
 # Build package map
@@ -334,8 +372,9 @@ function Test-PackageEnabled {
     [pscustomobject]$PackageObject
   )
 
-  if ($null -eq $PackageObject.enabled) { return $true }
-  return [bool]$PackageObject.enabled
+  $enabledVal = $PackageObject | Select-Object -ExpandProperty enabled -ErrorAction SilentlyContinue
+  if ($null -eq $enabledVal) { return $true }
+  return [bool]$enabledVal
 }
 
 # Determine packages to run
@@ -359,11 +398,19 @@ if ($Unlink) {
   if ($Package -and $Package.Count -gt 0) {
     $unlinkPkgs = @($Package)
   } else {
-    $unlinkPkgs = @($state.packages.PSObject.Properties.Name)
+    $unlinkPkgs = @()
+    foreach ($prop in $state.packages.PSObject.Properties) {
+      $unlinkPkgs += $prop.Name
+    }
   }
 
   foreach ($pkg in $unlinkPkgs) {
-    if (-not ($state.packages.PSObject.Properties.Name -contains $pkg)) {
+    $hasPkg = $false
+    foreach ($prop in $state.packages.PSObject.Properties) {
+      if ($prop.Name -eq $pkg) { $hasPkg = $true; break }
+    }
+    
+    if (-not $hasPkg) {
       Write-Host "==> unlink: $pkg (no state)"
       continue
     }
@@ -371,9 +418,15 @@ if ($Unlink) {
     Write-Host "==> unlink: $pkg"
     $links = Get-StatePackageLinks -Name $pkg
 
-    foreach ($toKey in @($links.PSObject.Properties.Name)) {
+    $toKeys = @()
+    foreach ($prop in $links.PSObject.Properties) {
+      $toKeys += $prop.Name
+    }
+    
+    foreach ($toKey in $toKeys) {
       $old = $links.$toKey
-      $to  = Resolve-DotmngrPath -Path ([string]$old.to)
+      $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+      $to  = Resolve-DotmngrPath -Path ([string]$oldToVal)
 
       Write-Host "  - $to"
       if (Test-ShouldRemoveManagedLink -Destination $to -StateEntry $old) {
@@ -405,7 +458,8 @@ foreach ($pkg in $selectedPackages) {
   $pkgObj = $packagesMap[$pkg]
   if (-not $pkgObj.items) { throw "Package '$pkg' must contain 'items' array." }
 
-  $pkgMode = if ($pkgObj.mode) { ([string]$pkgObj.mode).ToLower() } else { $globalMode }
+  $pkgModeValue = $pkgObj | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+  $pkgMode = if ($pkgModeValue) { ([string]$pkgModeValue).ToLower() } else { $globalMode }
   $useTrash = $globalTrash
   $trashDir = $globalTrashDir
 
@@ -414,10 +468,20 @@ foreach ($pkg in $selectedPackages) {
   $desired = @{} # toResolved -> {to,from,mode}
 
   foreach ($it in $pkgObj.items) {
-    $mode = if ($it.mode) { ([string]$it.mode).ToLower() } else { $pkgMode }
+    $itModeValue = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+    $mode = if ($itModeValue) { ([string]$itModeValue).ToLower() } else { $pkgMode }
 
-    $toExpanded = Resolve-DotmngrPath -Path ([string]$it.to)
-    $fromExpanded = [System.Environment]::ExpandEnvironmentVariables([string]$it.from)
+    $itTo = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+    $itFrom = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
+    
+    # Validate required properties
+    if ([string]::IsNullOrWhiteSpace($itTo) -or [string]::IsNullOrWhiteSpace($itFrom)) {
+      Write-Host "  WARN: item missing 'to' or 'from' property, skipping"
+      continue
+    }
+    
+    $toExpanded = Resolve-DotmngrPath -Path ([string]$itTo)
+    $fromExpanded = [System.Environment]::ExpandEnvironmentVariables([string]$itFrom)
 
     $fromResolved = $null
     try {
@@ -433,11 +497,25 @@ foreach ($pkg in $selectedPackages) {
 
   # Cleanup managed destinations removed from this package
   $links = Get-StatePackageLinks -Name $pkg
-  foreach ($toKey in @($links.PSObject.Properties.Name)) {
+  
+  $propNames = @()
+  foreach ($prop in $links.PSObject.Properties) {
+    $propNames += $prop.Name
+  }
+  
+  foreach ($toKey in $propNames) {
     if ($desired.ContainsKey($toKey)) { continue }
 
     $old = $links.$toKey
-    $oldTo = Resolve-DotmngrPath -Path ([string]$old.to)
+    $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+    
+    if ([string]::IsNullOrWhiteSpace($oldToVal)) {
+      Write-Host "  cleanup: WARN: state entry missing 'to' property, skipping"
+      $links.PSObject.Properties.Remove($toKey)
+      continue
+    }
+    
+    $oldTo = Resolve-DotmngrPath -Path ([string]$oldToVal)
 
     Write-Host "  cleanup: $oldTo"
     if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
@@ -452,9 +530,9 @@ foreach ($pkg in $selectedPackages) {
   # Apply desired
   foreach ($toKey in $desired.Keys) {
     $it   = $desired[$toKey]
-    $mode = $it.mode
-    $from = $it.from
-    $to   = $it.to
+    $mode = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+    $from = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
+    $to   = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
 
     Write-Host "  -> $mode : $from -> $to"
     New-ParentDirectoryIfMissing -Path $to
