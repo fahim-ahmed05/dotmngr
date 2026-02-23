@@ -69,7 +69,7 @@ Removes managed links for selected packages:
 .\dotmngr.ps1 -ConfigPath .\dotlinks.json -Unlink
 ```
 
-## 📂 Config Structure
+## Config Structure
 
 Your config **must** use this format:
 
@@ -96,18 +96,18 @@ Your config **must** use this format:
 }
 ```
 
-## 🌍 Environment Variable Support
+## Environment Variable Support
 
 `dotmngr` supports **Windows-style environment variables only**:
 
-✅ Supported:
+Supported:
 
 * `%USERPROFILE%`
 * `%LOCALAPPDATA%`
 * `%APPDATA%`
 * Any `%ENV_VAR%`
 
-❌ Not supported:
+Not supported:
 
 * `~`
 * `$env:LOCALAPPDATA`
@@ -123,7 +123,7 @@ Example:
 }
 ```
 
-## 🔎 Configuration Reference
+## Configuration Reference
 
 ### `global`
 
