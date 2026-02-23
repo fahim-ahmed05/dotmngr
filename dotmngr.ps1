@@ -168,10 +168,10 @@ function Remove-ManagedDestination {
 
   if ($UseTrash) {
     $moved = Move-ItemToTrashFolder -Path $Path -TrashDir $TrashDir
-    Write-Host "    moved to trash: $moved"
+        Write-Host "    moved to trash: $moved" -ForegroundColor Yellow
   } else {
     Remove-Item -LiteralPath $Path -Recurse -Force
-    Write-Host "    removed."
+    Write-Host "    removed." -ForegroundColor Yellow
   }
 }
 
@@ -266,7 +266,7 @@ if (-not $config.packages) { throw "Config must contain 'packages'." }
 # Safely access mode property with diagnostics
 $modeProperty = $config.global | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
 if ($null -eq $modeProperty) {
-  Write-Host "WARN: global.mode not found or empty. Available properties in global:"
+  Write-Host "WARN: global.mode not found or empty. Available properties in global:" -ForegroundColor Yellow
   $config.global | Get-Member -MemberType NoteProperty | ForEach-Object { Write-Host "  - $($_.Name)" }
   $globalMode = "symlink"
 } else {
@@ -306,7 +306,7 @@ if (Test-Path -LiteralPath $statePath) {
       if ($loadedPackages) { $state.packages = $loadedPackages }
     }
   } catch {
-    Write-Host "WARN: couldn't parse state file, starting fresh: $statePath"
+  Write-Host "WARN: couldn't parse state file, starting fresh: $statePath" -ForegroundColor Yellow
   }
 }
 
@@ -413,11 +413,11 @@ if ($Unlink) {
     }
     
     if (-not $hasPkg) {
-      Write-Host "==> unlink: $pkg (no state)"
+    Write-Host "==> unlink: $pkg (no state)" -ForegroundColor Yellow
       continue
     }
 
-    Write-Host "==> unlink: $pkg"
+    Write-Host "==> unlink: $pkg" -ForegroundColor Cyan
     $links = Get-StatePackageLinks -Name $pkg
 
     $toKeys = @()
@@ -431,11 +431,11 @@ if ($Unlink) {
       $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
       $to  = Resolve-DotmngrPath -Path ([string]$oldToVal)
 
-      Write-Host "  - $to"
+      Write-Host "  - $to" -ForegroundColor White
       if (Test-ShouldRemoveManagedLink -Destination $to -StateEntry $old) {
         Remove-ManagedDestination -Path $to -UseTrash $globalTrash -TrashDir $globalTrashDir
       } else {
-        Write-Host "    WARN: not removing (destination no longer matches managed link)."
+        Write-Host "    WARN: not removing (destination no longer matches managed link)." -ForegroundColor Yellow
       }
 
       $links.PSObject.Properties.Remove($toKey)
@@ -446,7 +446,7 @@ if ($Unlink) {
 
   $state.updated = (Get-Date).ToString("o")
   $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $statePath -Encoding UTF8
-  Write-Host "==> state saved: $statePath"
+  Write-Host "==> state saved: $statePath" -ForegroundColor Green
   return
 }
 
@@ -454,7 +454,7 @@ if ($Unlink) {
 
 foreach ($pkg in $selectedPackages) {
   if (-not $packagesMap.ContainsKey($pkg)) {
-    Write-Host "WARN: package '$pkg' not found in config."
+  Write-Host "WARN: package '$pkg' not found in config." -ForegroundColor Yellow
     continue
   }
 
@@ -466,7 +466,7 @@ foreach ($pkg in $selectedPackages) {
   $useTrash = $globalTrash
   $trashDir = $globalTrashDir
 
-  Write-Host "==> package: $pkg"
+  Write-Host "==> package: $pkg" -ForegroundColor Cyan
 
   $desired = @{} # toResolved -> {to,from,mode}
 
@@ -479,7 +479,7 @@ foreach ($pkg in $selectedPackages) {
     
     # Validate required properties
     if ([string]::IsNullOrWhiteSpace($itTo) -or [string]::IsNullOrWhiteSpace($itFrom)) {
-      Write-Host "  WARN: item missing 'to' or 'from' property, skipping"
+      Write-Host "  WARN: item missing 'to' or 'from' property, skipping" -ForegroundColor Yellow
       continue
     }
     
@@ -490,8 +490,8 @@ foreach ($pkg in $selectedPackages) {
     try {
       $fromResolved = (Resolve-Path -LiteralPath $fromExpanded).Path
     } catch {
-      Write-Host "  -> $mode : $fromExpanded -> $toExpanded"
-      Write-Host "     WARN: source missing, skipping."
+      Write-Host "  -> $mode : $fromExpanded -> $toExpanded" -ForegroundColor White
+      Write-Host "     WARN: source missing, skipping." -ForegroundColor Yellow
       continue
     }
 
@@ -521,11 +521,11 @@ foreach ($pkg in $selectedPackages) {
     
     $oldTo = Resolve-DotmngrPath -Path ([string]$oldToVal)
 
-    Write-Host "  cleanup: $oldTo"
+    Write-Host "  cleanup: $oldTo" -ForegroundColor Cyan
     if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
       Remove-ManagedDestination -Path $oldTo -UseTrash $useTrash -TrashDir $trashDir
     } else {
-      Write-Host "    WARN: not removing (destination no longer matches managed link)."
+      Write-Host "    WARN: not removing (destination no longer matches managed link)." -ForegroundColor Yellow
     }
 
     $links.PSObject.Properties.Remove($toKey)
@@ -538,46 +538,46 @@ foreach ($pkg in $selectedPackages) {
     $from = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
     $to   = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
 
-    Write-Host "  -> $mode : $from -> $to"
+    Write-Host "  -> $mode : $from -> $to" -ForegroundColor White
     New-ParentDirectoryIfMissing -Path $to
 
     if ($mode -eq "copyonce") {
       if (Test-Path -LiteralPath $to) {
-        Write-Host "     destination exists, skipping (copyOnce)."
+        Write-Host "     destination exists, skipping (copyOnce)." -ForegroundColor Green
         continue
       }
 
       if (Test-Path -LiteralPath $from -PathType Container) {
         New-DirectoryIfMissing -Path $to
         Invoke-RobocopySafe -Source $from -Destination $to -Arguments @("/E","/R:1","/W:1","/NFL","/NDL")
-        Write-Host "     directory copied once."
+        Write-Host "     directory copied once." -ForegroundColor Green
       } else {
         $srcDir = Split-Path -Parent $from
         $dstDir = Split-Path -Parent $to
         $name   = Split-Path -Leaf $from
         Invoke-RobocopySafe -Source $srcDir -Destination $dstDir -Arguments @($name,"/R:1","/W:1","/NFL","/NDL")
-        Write-Host "     file copied once."
+        Write-Host "     file copied once." -ForegroundColor Green
       }
       continue
     }
 
     if ($mode -eq "copy") {
       if (Test-Path -LiteralPath $to -and (Test-ReparsePoint -Path $to)) {
-        Write-Host "     destination is a link; removing before copy."
+        Write-Host "     destination is a link; removing before copy." -ForegroundColor Yellow
         Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
       }
 
       if (Test-Path -LiteralPath $from -PathType Container) {
         New-DirectoryIfMissing -Path $to
         Invoke-RobocopySafe -Source $from -Destination $to -Arguments @("/E","/XO","/R:1","/W:1","/NFL","/NDL")
-        Write-Host "     robocopy sync completed."
+        Write-Host "     robocopy sync completed." -ForegroundColor Green
       } else {
         New-ParentDirectoryIfMissing -Path $to
         $srcDir = Split-Path -Parent $from
         $dstDir = Split-Path -Parent $to
         $name   = Split-Path -Leaf $from
         Invoke-RobocopySafe -Source $srcDir -Destination $dstDir -Arguments @($name,"/XO","/R:1","/W:1","/NFL","/NDL")
-        Write-Host "     file synced (robocopy)."
+        Write-Host "     file synced (robocopy)." -ForegroundColor Green
       }
       continue
     }
@@ -590,27 +590,27 @@ foreach ($pkg in $selectedPackages) {
         if (Test-ReparsePoint -Path $to) {
           $target = Get-LinkTargetPath -Path $to
           if ($target -eq $from) {
-            Write-Host "     correct link already exists, skipping."
+            Write-Host "     correct link already exists, skipping." -ForegroundColor Green
             $needsCreate = $false
           } else {
-            Write-Host "     link points elsewhere ($target), replacing."
+            Write-Host "     link points elsewhere ($target), replacing." -ForegroundColor Yellow
             Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
           }
         } else {
-          Write-Host "     exists but is not a link, replacing."
+          Write-Host "     exists but is not a link, replacing." -ForegroundColor Yellow
           Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
         }
       }
       elseif ($mode -eq "hardlink") {
         if (Test-ReparsePoint -Path $to) {
-          Write-Host "     is a reparse link, replacing with hardlink."
+          Write-Host "     is a reparse link, replacing with hardlink." -ForegroundColor Yellow
           Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
         } else {
           if (Test-HardlinkMatchesSource -Destination $to -Source $from) {
-            Write-Host "     correct hardlink already exists, skipping."
+            Write-Host "     correct hardlink already exists, skipping." -ForegroundColor Green
             $needsCreate = $false
           } else {
-            Write-Host "     not verified as correct hardlink, replacing."
+            Write-Host "     not verified as correct hardlink, replacing." -ForegroundColor Yellow
             Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
           }
         }
@@ -630,17 +630,17 @@ foreach ($pkg in $selectedPackages) {
           throw "hardlink mode only supports files: $from"
         }
         New-Item -ItemType HardLink -Path $to -Target $from | Out-Null
-        Write-Host "     hardlink created."
+        Write-Host "     hardlink created." -ForegroundColor Green
         $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       }
       "symlink" {
         New-Item -ItemType SymbolicLink -Path $to -Target $from | Out-Null
-        Write-Host "     symlink created."
+        Write-Host "     symlink created." -ForegroundColor Green
         $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       }
       "junction" {
         New-Item -ItemType Junction -Path $to -Target $from | Out-Null
-        Write-Host "     junction created."
+        Write-Host "     junction created." -ForegroundColor Green
         $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       }
       default {
