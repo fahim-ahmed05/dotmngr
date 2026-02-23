@@ -328,7 +328,7 @@ function Get-StatePackage {
   if (-not $hasPackage) {
     $state.packages | Add-Member -MemberType NoteProperty -Name $Name -Value ([pscustomobject]@{
       updated = $null
-      links   = @{}
+      links   = [PSCustomObject]@{}
     })
   }
   
@@ -338,7 +338,7 @@ function Get-StatePackage {
   }
   
   # Fallback (should not reach here, but safe)
-  return [pscustomobject]@{ updated = $null; links = @{} }
+  return [pscustomobject]@{ updated = $null; links = [PSCustomObject]@{} }
 }
 
 function Get-StatePackageLinks {
@@ -350,12 +350,14 @@ function Get-StatePackageLinks {
   )
 
   $pkgState = Get-StatePackage -Name $Name
-  if (-not $pkgState.links) { 
-    $pkgState | Add-Member -MemberType NoteProperty -Name links -Value @{} -ErrorAction SilentlyContinue
+  
+  # Check if links property exists, if not create it
+  $linksVal = $pkgState | Select-Object -ExpandProperty links -ErrorAction SilentlyContinue
+  if ($null -eq $linksVal) { 
+    $pkgState | Add-Member -MemberType NoteProperty -Name links -Value ([PSCustomObject]@{}) -Force
+    $linksVal = $pkgState | Select-Object -ExpandProperty links
   }
   
-  $linksVal = $pkgState | Select-Object -ExpandProperty links -ErrorAction SilentlyContinue
-  if ($null -eq $linksVal) { $linksVal = @{} }
   return $linksVal
 }
 
@@ -420,11 +422,12 @@ if ($Unlink) {
 
     $toKeys = @()
     foreach ($prop in $links.PSObject.Properties) {
-      $toKeys += $prop.Name
+      $toKeys += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
     }
     
-    foreach ($toKey in $toKeys) {
-      $old = $links.$toKey
+    foreach ($toKeyInfo in $toKeys) {
+      $toKey = $toKeyInfo.Name
+      $old = $toKeyInfo.Value
       $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
       $to  = Resolve-DotmngrPath -Path ([string]$oldToVal)
 
@@ -500,17 +503,18 @@ foreach ($pkg in $selectedPackages) {
   
   $propNames = @()
   foreach ($prop in $links.PSObject.Properties) {
-    $propNames += $prop.Name
+    $propNames += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
   }
   
-  foreach ($toKey in $propNames) {
+  foreach ($propInfo in $propNames) {
+    $toKey = $propInfo.Name
     if ($desired.ContainsKey($toKey)) { continue }
 
-    $old = $links.$toKey
+    $old = $propInfo.Value
     $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
     
+    # Silently clean up malformed/corrupted state entries
     if ([string]::IsNullOrWhiteSpace($oldToVal)) {
-      Write-Host "  cleanup: WARN: state entry missing 'to' property, skipping"
       $links.PSObject.Properties.Remove($toKey)
       continue
     }
@@ -616,7 +620,7 @@ foreach ($pkg in $selectedPackages) {
     }
 
     if (-not $needsCreate) {
-      $links.$toKey = [pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }
+      $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       continue
     }
 
@@ -627,17 +631,17 @@ foreach ($pkg in $selectedPackages) {
         }
         New-Item -ItemType HardLink -Path $to -Target $from | Out-Null
         Write-Host "     hardlink created."
-        $links.$toKey = [pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }
+        $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       }
       "symlink" {
         New-Item -ItemType SymbolicLink -Path $to -Target $from | Out-Null
         Write-Host "     symlink created."
-        $links.$toKey = [pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }
+        $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       }
       "junction" {
         New-Item -ItemType Junction -Path $to -Target $from | Out-Null
         Write-Host "     junction created."
-        $links.$toKey = [pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }
+        $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       }
       default {
         throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, copy, copyOnce)"
