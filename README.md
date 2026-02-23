@@ -4,7 +4,6 @@ A simple PowerShell script that manages dotfiles scattered across your system us
 
 ## Features
 
-* Config-driven: no need to reorganize your dotfiles repo
 * Supports:
 
   * `symlink` (file/dir)
@@ -42,63 +41,131 @@ Settings → Privacy & Security → For Developers → **Developer Mode** → ON
 
 ## Usage
 
-Run from PowerShell:
+### Apply enabled packages
 
 ```powershell
 .\dotmngr.ps1 -ConfigPath .\dotlinks.json
 ```
 
-Re-run anytime after changing the config. The script is designed to be idempotent.
+### Apply specific packages
 
+```powershell
+.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Package nvim,git
+```
 
-## Example config
+> This runs even if `enabled: false`.
 
-> Notes:
->
-> * `from` should be a full path (supports `~`)
-> * `to` should be the target location (supports `~`)
-> * `defaults.mode` is used if an item doesn’t specify `mode`
-> * `trashDir` is where replaced files/folders get moved (when `trash: true`)
+### Unlink packages
+
+Removes managed links for selected packages:
+
+```powershell
+.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Package nvim -Unlink
+```
+
+### Unlink everything
+
+```powershell
+.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Unlink
+```
+
+## 📂 Config Structure
+
+Your config **must** use this format:
 
 ```json
 {
-  "defaults": {
+  "global": {
     "mode": "junction",
     "trash": true,
-    "trashDir": "~/Trash/DotLinks"
+    "trashDir": "%LOCALAPPDATA%\\DotLinksTrash"
   },
-  "items": [
-    {
-      "from": "~/Git/dotfiles/nvim",
-      "to": "~/AppData/Local/nvim",
-      "mode": "junction"
-    },
-    {
-      "from": "~/Git/dotfiles/powershell/profile.ps1",
-      "to": "~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1",
-      "mode": "symlink"
-    },
-    {
-      "from": "~/Git/dotfiles/git/.gitconfig",
-      "to": "~/.gitconfig",
-      "mode": "hardlink"
-    },
-    {
-      "from": "~/Git/dotfiles/wezterm/.wezterm.lua",
-      "to": "~/.wezterm.lua",
-      "mode": "copy"
-    },
-    {
-      "from": "~/Git/dotfiles/app/sample-config.json",
-      "to": "~/AppData/Roaming/MyApp/config.json",
-      "mode": "copyOnce"
+
+  "packages": {
+    "nvim": {
+      "enabled": true,
+      "mode": "junction",
+      "items": [
+        {
+          "from": "%USERPROFILE%\\Git\\dotfiles\\nvim",
+          "to": "%LOCALAPPDATA%\\nvim"
+        }
+      ]
     }
+  }
+}
+```
+
+## 🌍 Environment Variable Support
+
+`dotmngr` supports **Windows-style environment variables only**:
+
+✅ Supported:
+
+* `%USERPROFILE%`
+* `%LOCALAPPDATA%`
+* `%APPDATA%`
+* Any `%ENV_VAR%`
+
+❌ Not supported:
+
+* `~`
+* `$env:LOCALAPPDATA`
+* `$HOME`
+
+Use `%VAR%` syntax inside JSON.
+
+Example:
+
+```json
+{
+  "to": "%LOCALAPPDATA%\\nvim"
+}
+```
+
+## 🔎 Configuration Reference
+
+### `global`
+
+| Field      | Description                                       |
+| ---------- | ------------------------------------------------- |
+| `mode`     | Default mode if not specified per package/item    |
+| `trash`    | If `true`, replaced files are moved to `trashDir` |
+| `trashDir` | Folder where replaced files are stored            |
+
+### `packages`
+
+Each package:
+
+```json
+"packageName": {
+  "enabled": true,
+  "mode": "junction",
+  "items": [
+    { "from": "...", "to": "...", "mode": "..." }
   ]
 }
 ```
 
+#### Fields
 
-## Modes explained
+| Field     | Required | Description             |
+| --------- | -------- | ----------------------- |
+| `enabled` | No       | Defaults to `true`      |
+| `mode`    | No       | Overrides `global.mode` |
+| `items`   | Yes      | Array of mappings       |
+
+
+### Mode Resolution Order
+
+When processing an item:
+
+1. `item.mode`
+2. `package.mode`
+3. `global.mode`
+
+
+## Modes Explained
 
 ### `symlink`
 
