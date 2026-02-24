@@ -12,8 +12,8 @@ A simple PowerShell script that manages dotfiles scattered across your system us
   * `copy` (sync via `robocopy`, skip overwriting newer destination)
   * `copyOnce` (copy only if destination doesn’t exist)  
   * `shortcut` (Windows `.lnk` shortcut)
-  * Safe cleanup: If an entry is removed from config, it removes the destination **only if it still matches what the script created**
-
+  
+* Safe cleanup: If an entry is removed from config, it removes the destination **only if it still matches what the script created**
 * State tracking stored under: `~\.config\dotmngr\state.<configName>.json`
 
 
