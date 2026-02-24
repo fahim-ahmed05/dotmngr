@@ -29,6 +29,9 @@ Modes:
   copy      - Robocopy sync (skips overwriting newer destination via /XO)
   copyOnce  - Copy only if destination doesn’t exist  shortcut  - Windows .lnk 
   shortcut  - Windows .lnk shortcut (file/dir)
+Switches:
+  -Unlink   Remove all managed links for the selected packages
+  -Status   Show a table of all tracked items and whether they are intact
 #>
 
 [CmdletBinding()]
@@ -41,7 +44,10 @@ param(
   [string[]]$Package,
 
   [Parameter()]
-  [switch]$Unlink
+  [switch]$Unlink,
+
+  [Parameter()]
+  [switch]$Status
 )
 
 Set-StrictMode -Version Latest
@@ -452,6 +458,50 @@ if ($Package -and $Package.Count -gt 0) {
       $selectedPackages += $k
     }
   }
+}
+
+# ---------------- Status mode ----------------
+
+if ($Status) {
+  $rows = @()
+
+  foreach ($pkgProp in $state.packages.PSObject.Properties) {
+    $pkgName  = $pkgProp.Name
+    $pkgLinks = $pkgProp.Value | Select-Object -ExpandProperty links -ErrorAction SilentlyContinue
+    if ($null -eq $pkgLinks) { continue }
+
+    foreach ($linkProp in $pkgLinks.PSObject.Properties) {
+      $entry = $linkProp.Value
+      $toVal   = $entry | Select-Object -ExpandProperty to   -ErrorAction SilentlyContinue
+      $fromVal = $entry | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
+      $modeVal = $entry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+
+      $toPath = if ($toVal) { Resolve-DotmngrPath -Path ([string]$toVal) } else { "" }
+
+      $linkStatus = if ([string]::IsNullOrWhiteSpace($toPath)) {
+        "UNKNOWN"
+      } elseif (Test-Path -LiteralPath $toPath) {
+        "OK"
+      } else {
+        "MISSING"
+      }
+
+      $rows += [pscustomobject]@{
+        Package = $pkgName
+        Mode    = if ($modeVal) { [string]$modeVal } else { "" }
+        Status  = $linkStatus
+        To      = $toPath
+        From    = if ($fromVal) { Resolve-DotmngrPath -Path ([string]$fromVal) } else { "" }
+      }
+    }
+  }
+
+  if ($rows.Count -eq 0) {
+    Write-Host "No tracked items found in state file: $statePath" -ForegroundColor Yellow
+  } else {
+    $rows | Format-Table -AutoSize -Property Package, Mode, Status, To, From
+  }
+  return
 }
 
 # ---------------- Unlink mode ----------------
