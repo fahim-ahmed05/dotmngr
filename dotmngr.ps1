@@ -27,7 +27,8 @@ Modes:
   junction  - Junction (dir)
   hardlink  - Hard link (file, same volume)
   copy      - Robocopy sync (skips overwriting newer destination via /XO)
-  copyOnce  - Copy only if destination doesn’t exist
+  copyOnce  - Copy only if destination doesn’t exist  shortcut  - Windows .lnk 
+  shortcut  - Windows .lnk shortcut (file/dir)
 #>
 
 [CmdletBinding()]
@@ -103,6 +104,61 @@ function Test-ReparsePoint {
   if (!(Test-Path -LiteralPath $Path)) { return $false }
   $item = Get-Item -LiteralPath $Path -Force
   return [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+
+function Get-ShortcutTarget {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Path
+  )
+
+  try {
+    $wsh = New-Object -ComObject WScript.Shell
+    $sc  = $wsh.CreateShortcut($Path)
+    return $sc.TargetPath
+  } catch {
+    return $null
+  }
+}
+
+function New-WindowsShortcut {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Path,
+
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$TargetPath,
+
+    [Parameter()]
+    [string]$WorkingDirectory = "",
+
+    [Parameter()]
+    [string]$Arguments = "",
+
+    [Parameter()]
+    [string]$Description = "",
+
+    [Parameter()]
+    [string]$IconLocation = "",
+
+    [Parameter()]
+    [int]$WindowStyle = 1
+  )
+
+  $wsh = New-Object -ComObject WScript.Shell
+  $sc  = $wsh.CreateShortcut($Path)
+  $sc.TargetPath  = $TargetPath
+  $sc.WindowStyle = $WindowStyle
+  if ($WorkingDirectory) { $sc.WorkingDirectory = $WorkingDirectory }
+  if ($Arguments)        { $sc.Arguments        = $Arguments }
+  if ($Description)      { $sc.Description      = $Description }
+  if ($IconLocation)     { $sc.IconLocation     = $IconLocation }
+  $sc.Save()
 }
 
 function Get-LinkTargetPath {
@@ -231,6 +287,11 @@ function Test-ShouldRemoveManagedLink {
   if ($mode -eq "hardlink") {
     if (Test-ReparsePoint -Path $Destination) { return $false }
     return (Test-HardlinkMatchesSource -Destination $Destination -Source $from)
+  }
+
+  if ($mode -eq "shortcut") {
+    $target = Get-ShortcutTarget -Path $Destination
+    return ($null -ne $target -and $target -eq $from)
   }
 
   # We do not auto-remove copies.
@@ -495,7 +556,20 @@ foreach ($pkg in $selectedPackages) {
       continue
     }
 
-    $desired[$toExpanded] = [pscustomobject]@{ to=$toExpanded; from=$fromResolved; mode=$mode }
+    $desiredEntry = [pscustomobject]@{ to=$toExpanded; from=$fromResolved; mode=$mode }
+    if ($mode -eq "shortcut") {
+      $scWorkDir  = $it | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
+      $scArgs     = $it | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
+      $scDesc     = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
+      $scIcon     = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
+      $scWinStyle = $it | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
+      if ($null -ne $scWorkDir)  { $desiredEntry | Add-Member -MemberType NoteProperty -Name workingDirectory -Value ([string]$scWorkDir) }
+      if ($null -ne $scArgs)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name arguments        -Value ([string]$scArgs) }
+      if ($null -ne $scDesc)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name description      -Value ([string]$scDesc) }
+      if ($null -ne $scIcon)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name iconLocation     -Value ([string]$scIcon) }
+      if ($null -ne $scWinStyle) { $desiredEntry | Add-Member -MemberType NoteProperty -Name windowStyle      -Value ([int]$scWinStyle) }
+    }
+    $desired[$toExpanded] = $desiredEntry
   }
 
   # Cleanup managed destinations removed from this package
@@ -614,8 +688,17 @@ foreach ($pkg in $selectedPackages) {
             Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
           }
         }
+      } elseif ($mode -eq "shortcut") {
+        $target = Get-ShortcutTarget -Path $to
+        if ($null -ne $target -and $target -eq $from) {
+          Write-Host "     correct shortcut already exists, skipping." -ForegroundColor Green
+          $needsCreate = $false
+        } else {
+          Write-Host "     shortcut points elsewhere ($target), replacing." -ForegroundColor Yellow
+          Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+        }
       } else {
-        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, copy, copyOnce)"
+        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, copy, copyOnce, shortcut)"
       }
     }
 
@@ -643,8 +726,24 @@ foreach ($pkg in $selectedPackages) {
         Write-Host "     junction created." -ForegroundColor Green
         $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       }
+      "shortcut" {
+        $scParams = @{ Path = $to; TargetPath = $from }
+        $scWorkDir  = $it | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
+        $scArgs     = $it | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
+        $scDesc     = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
+        $scIcon     = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
+        $scWinStyle = $it | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
+        if ($scWorkDir)            { $scParams.WorkingDirectory = $scWorkDir }
+        if ($scArgs)               { $scParams.Arguments        = $scArgs }
+        if ($scDesc)               { $scParams.Description      = $scDesc }
+        if ($scIcon)               { $scParams.IconLocation     = $scIcon }
+        if ($null -ne $scWinStyle) { $scParams.WindowStyle      = [int]$scWinStyle }
+        New-WindowsShortcut @scParams
+        Write-Host "     shortcut created." -ForegroundColor Green
+        $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
+      }
       default {
-        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, copy, copyOnce)"
+        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, copy, copyOnce, shortcut)"
       }
     }
   }
