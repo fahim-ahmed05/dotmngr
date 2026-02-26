@@ -230,7 +230,27 @@ Creates a Windows `.lnk` shortcut at `to` pointing to `from`.
 | `arguments`        | Command-line arguments passed to the target          |
 | `description`      | Tooltip text shown on the shortcut                   |
 | `iconLocation`     | Icon path, e.g. `"notepad.exe,0"` or `"app.exe,1"`  |
-| `windowStyle`      | `1` = normal (default), `3` = maximised, `7` = minimised |
+| `windowStyle`      | `normal`, `minimized`, `maximized`, or a raw integer (`normal` = 1, `maximized` = 3, `minimized` = 7) |
+
+**Example:**
+
+```json
+"shortcuts": {
+  "enabled": true,
+  "items": [
+    {
+      "mode": "shortcut",
+      "from": "%USERPROFILE%\\Git\\scripts\\launch.ps1",
+      "to": "%USERPROFILE%\\Desktop\\Launch.lnk",
+      "workingDirectory": "%USERPROFILE%\\Git\\scripts",
+      "arguments": "-NoProfile",
+      "description": "Launch my script",
+      "iconLocation": "%SYSTEMROOT%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe,0",
+      "windowStyle": "maximized"
+    }
+  ]
+}
+```
 
 ## What happens if `to` already exists?
 

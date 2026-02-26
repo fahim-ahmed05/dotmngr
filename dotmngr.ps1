@@ -129,6 +129,30 @@ function Get-ShortcutTarget {
   }
 }
 
+function Resolve-WindowStyle {
+  # Accepts a string alias ("normal", "default", "minimized", "maximized") or a
+  # raw integer (as string or int) and returns the corresponding Win32 nShowCmd int.
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    $Value
+  )
+
+  $map = @{
+    "normal"    = 1
+    "maximized" = 3
+    "minimized" = 7
+  }
+
+  $str = ([string]$Value).Trim().ToLower()
+  if ($map.ContainsKey($str)) { return $map[$str] }
+
+  $n = 0
+  if ([int]::TryParse($str, [ref]$n)) { return $n }
+
+  throw "Invalid windowStyle value '$Value'. Use a number or one of: normal, minimized, maximized."
+}
+
 function New-WindowsShortcut {
   [CmdletBinding()]
   param(
@@ -617,7 +641,7 @@ foreach ($pkg in $selectedPackages) {
       if ($null -ne $scArgs)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name arguments        -Value ([string]$scArgs) }
       if ($null -ne $scDesc)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name description      -Value ([string]$scDesc) }
       if ($null -ne $scIcon)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name iconLocation     -Value ([string]$scIcon) }
-      if ($null -ne $scWinStyle) { $desiredEntry | Add-Member -MemberType NoteProperty -Name windowStyle      -Value ([int]$scWinStyle) }
+      if ($null -ne $scWinStyle) { $desiredEntry | Add-Member -MemberType NoteProperty -Name windowStyle      -Value (Resolve-WindowStyle $scWinStyle) }
     }
     $desired[$toExpanded] = $desiredEntry
   }
@@ -787,7 +811,7 @@ foreach ($pkg in $selectedPackages) {
         if ($scArgs)               { $scParams.Arguments        = $scArgs }
         if ($scDesc)               { $scParams.Description      = $scDesc }
         if ($scIcon)               { $scParams.IconLocation     = $scIcon }
-        if ($null -ne $scWinStyle) { $scParams.WindowStyle      = [int]$scWinStyle }
+        if ($null -ne $scWinStyle) { $scParams.WindowStyle      = Resolve-WindowStyle $scWinStyle }
         New-WindowsShortcut @scParams
         Write-Host "     shortcut created." -ForegroundColor Green
         $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
