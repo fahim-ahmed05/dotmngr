@@ -700,10 +700,7 @@ foreach ($pkg in $selectedPackages) {
         Invoke-RobocopySafe -Source $from -Destination $to -Arguments @("/E","/R:1","/W:1","/NFL","/NDL")
         Write-Host "     directory copied once." -ForegroundColor Green
       } else {
-        $srcDir = Split-Path -Parent $from
-        $dstDir = Split-Path -Parent $to
-        $name   = Split-Path -Leaf $from
-        Invoke-RobocopySafe -Source $srcDir -Destination $dstDir -Arguments @($name,"/R:1","/W:1","/NFL","/NDL")
+        Copy-Item -LiteralPath $from -Destination $to -Force
         Write-Host "     file copied once." -ForegroundColor Green
       }
       continue
