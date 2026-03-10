@@ -804,10 +804,10 @@ foreach ($pkg in $selectedPackages) {
         $scDesc     = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
         $scIcon     = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
         $scWinStyle = $it | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
-        if ($scWorkDir)            { $scParams.WorkingDirectory = $scWorkDir }
+        if ($scWorkDir)            { $scParams.WorkingDirectory = [System.Environment]::ExpandEnvironmentVariables($scWorkDir) }
         if ($scArgs)               { $scParams.Arguments        = $scArgs }
         if ($scDesc)               { $scParams.Description      = $scDesc }
-        if ($scIcon)               { $scParams.IconLocation     = $scIcon }
+        if ($scIcon)               { $scParams.IconLocation     = [System.Environment]::ExpandEnvironmentVariables($scIcon) }
         if ($null -ne $scWinStyle) { $scParams.WindowStyle      = Resolve-WindowStyle $scWinStyle }
         New-WindowsShortcut @scParams
         Write-Host "     shortcut created." -ForegroundColor Green
