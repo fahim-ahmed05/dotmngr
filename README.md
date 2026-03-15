@@ -1,6 +1,6 @@
 # Dot Manager
 
-A simple PowerShell script that manages dotfiles scattered across your system using a JSON manifest. It can create links (symlink/junction/hardlink) or manage one-way file/directory transfers (`sync` or `seed`). It also keeps a state file so removed/moved entries in your config don’t leave stale links behind.
+A simple PowerShell script that manages dotfiles scattered across your system using a JSON manifest. It can create links (symlink/junction/hardlink) or manage one-way file/directory transfers (`push` or `seed`). It also keeps a state file so removed/moved entries in your config don’t leave stale links behind.
 
 ## Features
 
@@ -9,7 +9,7 @@ A simple PowerShell script that manages dotfiles scattered across your system us
   * `symlink` (file/dir)
   * `junction` (dir)
   * `hardlink` (file)
-  * `sync` (one-way sync via `robocopy`, skip overwriting newer destination)
+  * `push` (one-way push via `robocopy`, skip overwriting newer destination)
   * `seed` (copy only if destination doesn’t exist)  
   * `shortcut` (Windows `.lnk` shortcut)
   
@@ -215,13 +215,13 @@ Creates a hardlink at `to` pointing to `from`.
 * Files only (cannot hardlink directories)
 * Source and destination must be on the same drive/volume
 
-### `sync`
+### `push`
 
-Uses `robocopy` to sync `from → to`.
+Uses `robocopy` to push changes from `from → to`.
 
 * Uses timestamps + size
 * Uses `/XO` so it **won’t overwrite** destination if destination is newer
-* Good for “deploy but don’t clobber local edits”
+* Good for “push updates but don’t clobber local edits”
 
 ### `seed`
 
@@ -280,7 +280,7 @@ For link modes (`symlink`, `junction`, `hardlink`, `shortcut`):
 
 For transfer modes:
 
-* `sync` updates `to` from `from` via `robocopy`
+* `push` updates `to` from `from` via `robocopy`
 * `seed` does nothing if `to` exists
 
 
@@ -313,7 +313,7 @@ Enable Developer Mode or run PowerShell as Administrator.
 
 ### Hardlink fails
 
-Hardlinks only work for files on the same drive. If your dotfiles repo is on `D:` and `to` is on `C:`, use `symlink` or `sync` instead.
+Hardlinks only work for files on the same drive. If your dotfiles repo is on `D:` and `to` is on `C:`, use `symlink` or `push` instead.
 
 ### Robocopy returns weird exit codes
 
