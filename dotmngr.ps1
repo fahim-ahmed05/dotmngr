@@ -26,8 +26,8 @@ Modes:
   symlink   - Symbolic link (file/dir)
   junction  - Junction (dir)
   hardlink  - Hard link (file, same volume)
-  copy      - Robocopy sync (skips overwriting newer destination via /XO)
-  copyOnce  - Copy only if destination doesn’t exist (file/dir)
+  sync      - Robocopy sync (skips overwriting newer destination via /XO)
+  seed      - Copy only if destination doesn’t exist (file/dir)
   shortcut  - Windows .lnk shortcut (file/dir)
 Switches:
   -Unlink   Remove all managed links for the selected packages
@@ -328,7 +328,7 @@ function Test-ShouldRemoveManagedLink {
     return ($null -ne $target -and $target -eq $from)
   }
 
-  # We do not auto-remove copies.
+  # We do not auto-remove sync/seed destinations.
   return $false
 }
 
@@ -698,9 +698,9 @@ foreach ($pkg in $selectedPackages) {
       Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
     }
 
-    if ($mode -eq "copyonce") {
+    if ($mode -eq "seed") {
       if (Test-Path -LiteralPath $to) {
-        Write-Host "     destination exists, skipping (copyOnce)." -ForegroundColor Green
+        Write-Host "     destination exists, skipping (seed)." -ForegroundColor Green
         continue
       }
 
@@ -715,9 +715,9 @@ foreach ($pkg in $selectedPackages) {
       continue
     }
 
-    if ($mode -eq "copy") {
+    if ($mode -eq "sync") {
       if (Test-Path -LiteralPath $to -and (Test-ReparsePoint -Path $to)) {
-        Write-Host "     destination is a link; removing before copy." -ForegroundColor Yellow
+        Write-Host "     destination is a link; removing before sync." -ForegroundColor Yellow
         Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
       }
 
@@ -778,7 +778,7 @@ foreach ($pkg in $selectedPackages) {
           Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
         }
       } else {
-        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, copy, copyOnce, shortcut)"
+        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, sync, seed, shortcut)"
       }
     }
 
@@ -823,7 +823,7 @@ foreach ($pkg in $selectedPackages) {
         $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       }
       default {
-        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, copy, copyOnce, shortcut)"
+        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, sync, seed, shortcut)"
       }
     }
   }

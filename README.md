@@ -1,6 +1,6 @@
 # Dot Manager
 
-A simple PowerShell script that manages dotfiles scattered across your system using a JSON manifest. It can create links (symlink/junction/hardlink) or copy files/directories (sync or one-time copy). It also keeps a state file so removed/moved entries in your config don’t leave stale links behind.
+A simple PowerShell script that manages dotfiles scattered across your system using a JSON manifest. It can create links (symlink/junction/hardlink) or manage one-way file/directory transfers (`sync` or `seed`). It also keeps a state file so removed/moved entries in your config don’t leave stale links behind.
 
 ## Features
 
@@ -9,8 +9,8 @@ A simple PowerShell script that manages dotfiles scattered across your system us
   * `symlink` (file/dir)
   * `junction` (dir)
   * `hardlink` (file)
-  * `copy` (sync via `robocopy`, skip overwriting newer destination)
-  * `copyOnce` (copy only if destination doesn’t exist)  
+  * `sync` (one-way sync via `robocopy`, skip overwriting newer destination)
+  * `seed` (copy only if destination doesn’t exist)  
   * `shortcut` (Windows `.lnk` shortcut)
   
 * Safe cleanup: If an entry is removed from config, it removes the destination **only if it still matches what the script created**
@@ -215,7 +215,7 @@ Creates a hardlink at `to` pointing to `from`.
 * Files only (cannot hardlink directories)
 * Source and destination must be on the same drive/volume
 
-### `copy`
+### `sync`
 
 Uses `robocopy` to sync `from → to`.
 
@@ -223,7 +223,7 @@ Uses `robocopy` to sync `from → to`.
 * Uses `/XO` so it **won’t overwrite** destination if destination is newer
 * Good for “deploy but don’t clobber local edits”
 
-### `copyOnce`
+### `seed`
 
 Copies `from → to` only if `to` does not already exist.
 
@@ -278,10 +278,10 @@ For link modes (`symlink`, `junction`, `hardlink`, `shortcut`):
 * If `to` is already a link/hardlink/shortcut pointing to the correct `from` → **skip**
 * If `to` exists but is not the correct managed link → it is moved to `trashDir` (if enabled) and replaced
 
-For copy modes:
+For transfer modes:
 
-* `copy` syncs via `robocopy`
-* `copyOnce` does nothing if `to` exists
+* `sync` updates `to` from `from` via `robocopy`
+* `seed` does nothing if `to` exists
 
 
 ## State file behavior
@@ -302,7 +302,7 @@ When you remove an item from your config, dotmngr will attempt to remove the old
 * Prefer `junction` for folders on Windows (it’s the most painless)
 * Use `symlink` when you specifically want a true symlink
 * Use `hardlink` for single files you want to appear in multiple places on the same drive
-* Use `copyOnce` for apps that generate/modify configs and you only want to "seed" it once
+* Use `seed` for apps that generate/modify configs and you only want to seed it once
 * Use `shortcut` to place `.lnk` files on the Desktop or Start Menu without touching the real application files
 
 ## Troubleshooting
@@ -313,7 +313,7 @@ Enable Developer Mode or run PowerShell as Administrator.
 
 ### Hardlink fails
 
-Hardlinks only work for files on the same drive. If your dotfiles repo is on `D:` and `to` is on `C:`, use `symlink` or `copy` instead.
+Hardlinks only work for files on the same drive. If your dotfiles repo is on `D:` and `to` is on `C:`, use `symlink` or `sync` instead.
 
 ### Robocopy returns weird exit codes
 
