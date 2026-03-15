@@ -32,6 +32,7 @@ Modes:
 Switches:
   -Unlink   Remove all managed links for the selected packages
   -Status   Show a table of all tracked items and whether they are intact
+  -Force    Recreate each managed destination regardless of current state
 #>
 
 [CmdletBinding()]
@@ -47,7 +48,10 @@ param(
   [switch]$Unlink,
 
   [Parameter()]
-  [switch]$Status
+  [switch]$Status,
+
+  [Parameter()]
+  [switch]$Force
 )
 
 Set-StrictMode -Version Latest
@@ -688,6 +692,11 @@ foreach ($pkg in $selectedPackages) {
 
     Write-Host "  -> $mode : $from -> $to" -ForegroundColor White
     New-ParentDirectoryIfMissing -Path $to
+
+    if ($Force -and (Test-Path -LiteralPath $to)) {
+      Write-Host "     -Force set, removing destination before apply." -ForegroundColor Yellow
+      Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+    }
 
     if ($mode -eq "copyonce") {
       if (Test-Path -LiteralPath $to) {

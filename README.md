@@ -53,6 +53,20 @@ Settings → Privacy & Security → For Developers → **Developer Mode** → ON
 
 > This runs even if `enabled: false`.
 
+### Force reapply all selected items
+
+Removes existing destinations first, then reapplies each item regardless of current state:
+
+```powershell
+.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Force
+```
+
+You can combine it with package selection:
+
+```powershell
+.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Package nvim -Force
+```
+
 ### Unlink packages
 
 Removes managed links for selected packages:
@@ -253,6 +267,11 @@ Creates a Windows `.lnk` shortcut at `to` pointing to `from`.
 ```
 
 ## What happens if `to` already exists?
+
+When `-Force` is used:
+
+* Existing `to` is removed first (or moved to trash when enabled) for all modes
+* Item is reapplied without using state-based skip behavior
 
 For link modes (`symlink`, `junction`, `hardlink`, `shortcut`):
 
