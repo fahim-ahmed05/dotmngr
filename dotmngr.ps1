@@ -27,7 +27,7 @@ Modes:
   junction  - Junction (dir)
   hardlink  - Hard link (file, same volume)
   copy      - Robocopy sync (skips overwriting newer destination via /XO)
-  copyOnce  - Copy only if destination doesn’t exist  shortcut  - Windows .lnk 
+  copyOnce  - Copy only if destination doesn’t exist (file/dir)
   shortcut  - Windows .lnk shortcut (file/dir)
 Switches:
   -Unlink   Remove all managed links for the selected packages
