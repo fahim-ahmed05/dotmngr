@@ -694,7 +694,7 @@ foreach ($pkg in $selectedPackages) {
     New-ParentDirectoryIfMissing -Path $to
 
     if ($Force -and (Test-Path -LiteralPath $to)) {
-      Write-Host "     -Force set, removing destination before apply." -ForegroundColor Yellow
+      Write-Host "     removing destination before apply." -ForegroundColor Yellow
       Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
     }
 
