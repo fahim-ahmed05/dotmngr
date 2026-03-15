@@ -325,11 +325,62 @@ function Test-ShouldRemoveManagedLink {
 
   if ($mode -eq "shortcut") {
     $target = Get-ShortcutTarget -Path $Destination
-    return ($null -ne $target -and $target -eq $from)
+    if ($null -eq $target) { return $false }
+    $targetResolved = Resolve-DotmngrPath -Path ([string]$target)
+    return ($targetResolved -eq $from)
   }
 
   # We do not auto-remove push/seed destinations.
   return $false
+}
+
+function Get-TrackedItemStatus {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    [string]$Destination,
+
+    [Parameter()]
+    [string]$Source = "",
+
+    [Parameter()]
+    [string]$Mode = ""
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Destination)) { return "UNKNOWN" }
+  if (!(Test-Path -LiteralPath $Destination)) { return "MISSING" }
+
+  $m = ([string]$Mode).ToLower()
+  switch ($m) {
+    "symlink" {
+      if (!(Test-ReparsePoint -Path $Destination)) { return "DRIFTED" }
+      $target = Get-LinkTargetPath -Path $Destination
+      if ($target -eq $Source) { return "OK" }
+      return "DRIFTED"
+    }
+    "junction" {
+      if (!(Test-ReparsePoint -Path $Destination)) { return "DRIFTED" }
+      $target = Get-LinkTargetPath -Path $Destination
+      if ($target -eq $Source) { return "OK" }
+      return "DRIFTED"
+    }
+    "hardlink" {
+      if (Test-ReparsePoint -Path $Destination) { return "DRIFTED" }
+      if (Test-HardlinkMatchesSource -Destination $Destination -Source $Source) { return "OK" }
+      return "DRIFTED"
+    }
+    "shortcut" {
+      $target = Get-ShortcutTarget -Path $Destination
+      if ($null -eq $target) { return "DRIFTED" }
+      $targetResolved = Resolve-DotmngrPath -Path ([string]$target)
+      if ($targetResolved -eq $Source) { return "OK" }
+      return "DRIFTED"
+    }
+    default {
+      # For push/seed and unknown modes, existence is the best available signal.
+      return "OK"
+    }
+  }
 }
 
 function Invoke-RobocopySafe {
@@ -390,7 +441,7 @@ $statePath  = Join-Path $stateDir ("state.{0}.json" -f $configBase)
 $state = [pscustomobject]@{
   updated  = $null
   config   = $configFull
-  packages = @{}
+  packages = [pscustomobject]@{}
 }
 
 if (Test-Path -LiteralPath $statePath) {
@@ -398,7 +449,13 @@ if (Test-Path -LiteralPath $statePath) {
     $loaded = (Get-Content -LiteralPath $statePath -Raw) | ConvertFrom-Json
     if ($loaded) { 
       $loadedPackages = $loaded | Select-Object -ExpandProperty packages -ErrorAction SilentlyContinue
-      if ($loadedPackages) { $state.packages = $loadedPackages }
+      if ($loadedPackages) {
+        if ($loadedPackages -is [hashtable]) {
+          $state.packages = [pscustomobject]$loadedPackages
+        } else {
+          $state.packages = $loadedPackages
+        }
+      }
     }
   } catch {
   Write-Host "WARN: couldn't parse state file, starting fresh: $statePath" -ForegroundColor Yellow
@@ -413,27 +470,23 @@ function Get-StatePackage {
     [string]$Name
   )
 
-  if (-not $state.packages) { $state.packages = @{} }
+  if (-not $state.packages) { $state.packages = [pscustomobject]@{} }
 
-  $hasPackage = $false
-  foreach ($prop in $state.packages.PSObject.Properties) {
-    if ($prop.Name -eq $Name) { $hasPackage = $true; break }
-  }
-  
-  if (-not $hasPackage) {
+  $pkgProp = $state.packages.PSObject.Properties[$Name]
+  if ($null -eq $pkgProp) {
     $state.packages | Add-Member -MemberType NoteProperty -Name $Name -Value ([pscustomobject]@{
       updated = $null
       links   = [PSCustomObject]@{}
     })
+    $pkgProp = $state.packages.PSObject.Properties[$Name]
   }
-  
-  # Return using safe property access
-  foreach ($prop in $state.packages.PSObject.Properties) {
-    if ($prop.Name -eq $Name) { return $prop.Value }
+
+  $pkgState = $pkgProp.Value
+  if (-not $pkgState.PSObject.Properties["links"]) {
+    $pkgState | Add-Member -MemberType NoteProperty -Name links -Value ([PSCustomObject]@{}) -Force
   }
-  
-  # Fallback (should not reach here, but safe)
-  return [pscustomobject]@{ updated = $null; links = [PSCustomObject]@{} }
+
+  return $pkgState
 }
 
 function Get-StatePackageLinks {
@@ -445,15 +498,7 @@ function Get-StatePackageLinks {
   )
 
   $pkgState = Get-StatePackage -Name $Name
-  
-  # Check if links property exists, if not create it
-  $linksVal = $pkgState | Select-Object -ExpandProperty links -ErrorAction SilentlyContinue
-  if ($null -eq $linksVal) { 
-    $pkgState | Add-Member -MemberType NoteProperty -Name links -Value ([PSCustomObject]@{}) -Force
-    $linksVal = $pkgState | Select-Object -ExpandProperty links
-  }
-  
-  return $linksVal
+  return $pkgState.links
 }
 
 # Build package map
@@ -505,21 +550,16 @@ if ($Status) {
       $modeVal = $entry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
 
       $toPath = if ($toVal) { Resolve-DotmngrPath -Path ([string]$toVal) } else { "" }
-
-      $linkStatus = if ([string]::IsNullOrWhiteSpace($toPath)) {
-        "UNKNOWN"
-      } elseif (Test-Path -LiteralPath $toPath) {
-        "OK"
-      } else {
-        "MISSING"
-      }
+      $fromPath = if ($fromVal) { Resolve-DotmngrPath -Path ([string]$fromVal) } else { "" }
+      $modeText = if ($modeVal) { [string]$modeVal } else { "" }
+      $linkStatus = Get-TrackedItemStatus -Destination $toPath -Source $fromPath -Mode $modeText
 
       $rows += [pscustomobject]@{
         Package = $pkgName
-        Mode    = if ($modeVal) { [string]$modeVal } else { "" }
+        Mode    = $modeText
         Status  = $linkStatus
         To      = $toPath
-        From    = if ($fromVal) { Resolve-DotmngrPath -Path ([string]$fromVal) } else { "" }
+        From    = $fromPath
       }
     }
   }
@@ -546,12 +586,7 @@ if ($Unlink) {
   }
 
   foreach ($pkg in $unlinkPkgs) {
-    $hasPkg = $false
-    foreach ($prop in $state.packages.PSObject.Properties) {
-      if ($prop.Name -eq $pkg) { $hasPkg = $true; break }
-    }
-    
-    if (-not $hasPkg) {
+    if (-not $state.packages.PSObject.Properties[$pkg]) {
     Write-Host "==> unlink: $pkg (no state)" -ForegroundColor Yellow
       continue
     }
@@ -568,6 +603,10 @@ if ($Unlink) {
       $toKey = $toKeyInfo.Name
       $old = $toKeyInfo.Value
       $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+      if ([string]::IsNullOrWhiteSpace($oldToVal)) {
+        $links.PSObject.Properties.Remove($toKey)
+        continue
+      }
       $to  = Resolve-DotmngrPath -Path ([string]$oldToVal)
 
       Write-Host "  - $to" -ForegroundColor White
@@ -770,11 +809,12 @@ foreach ($pkg in $selectedPackages) {
         }
       } elseif ($mode -eq "shortcut") {
         $target = Get-ShortcutTarget -Path $to
-        if ($null -ne $target -and $target -eq $from) {
+        $targetResolved = if ($null -ne $target) { Resolve-DotmngrPath -Path ([string]$target) } else { $null }
+        if ($null -ne $targetResolved -and $targetResolved -eq $from) {
           Write-Host "     correct shortcut already exists, skipping." -ForegroundColor Green
           $needsCreate = $false
         } else {
-          Write-Host "     shortcut points elsewhere ($target), replacing." -ForegroundColor Yellow
+          Write-Host "     shortcut points elsewhere ($targetResolved), replacing." -ForegroundColor Yellow
           Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
         }
       } else {
