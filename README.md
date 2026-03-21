@@ -277,6 +277,7 @@ For link modes (`symlink`, `junction`, `hardlink`, `shortcut`):
 
 * If `to` is already a link/hardlink/shortcut pointing to the correct `from` → **skip**
 * If `to` exists but is not the correct managed link → it is moved to `trashDir` (if enabled) and replaced
+* If `from` is missing but `to` exists as a normal file/folder (`symlink`, `junction`, `hardlink` only), dotmngr moves `to` back to `from`, then creates the link at `to`
 
 For transfer modes:
 

@@ -265,6 +265,42 @@ function Remove-ManagedDestination {
   }
 }
 
+function Move-DestinationToSourceIfMissing {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$SourcePath,
+
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$DestinationPath,
+
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Mode
+  )
+
+  if (Test-Path -LiteralPath $SourcePath) { return $true }
+  if (!(Test-Path -LiteralPath $DestinationPath)) { return $false }
+  if (Test-ReparsePoint -Path $DestinationPath) { return $false }
+
+  if ($Mode -eq "junction" -and -not (Test-Path -LiteralPath $DestinationPath -PathType Container)) {
+    Write-LogLine -Tag "warn" -Message "destination is not a directory, cannot recover missing source for junction mode." -Color Yellow -Indent 4
+    return $false
+  }
+
+  if ($Mode -eq "hardlink" -and (Test-Path -LiteralPath $DestinationPath -PathType Container)) {
+    Write-LogLine -Tag "warn" -Message "destination is a directory, cannot recover missing source for hardlink mode." -Color Yellow -Indent 4
+    return $false
+  }
+
+  New-ParentDirectoryIfMissing -Path $SourcePath
+  Move-Item -LiteralPath $DestinationPath -Destination $SourcePath -Force
+  Write-LogLine -Tag "recover" -Message ("source missing; moved destination to source: {0}" -f $SourcePath) -Color Yellow -Indent 4
+  return $true
+}
+
 function Test-HardlinkMatchesSource {
   [CmdletBinding()]
   param(
@@ -719,8 +755,25 @@ foreach ($pkg in $selectedPackages) {
       $fromResolved = (Resolve-Path -LiteralPath $fromExpanded).Path
     } catch {
       Write-ItemHeader -Mode $mode -From $fromExpanded -To $toExpanded
-      Write-LogLine -Tag "warn" -Message "source missing, skipping." -Color Yellow -Indent 4
-      continue
+
+      $isRecoverableLinkMode = ($mode -eq "symlink" -or $mode -eq "junction" -or $mode -eq "hardlink")
+      if ($isRecoverableLinkMode) {
+        $recovered = Move-DestinationToSourceIfMissing -SourcePath $fromExpanded -DestinationPath $toExpanded -Mode $mode
+        if ($recovered) {
+          try {
+            $fromResolved = (Resolve-Path -LiteralPath $fromExpanded).Path
+          } catch {
+            Write-LogLine -Tag "warn" -Message "recovery attempted, but source still missing, skipping." -Color Yellow -Indent 4
+            continue
+          }
+        } else {
+          Write-LogLine -Tag "warn" -Message "source missing, skipping." -Color Yellow -Indent 4
+          continue
+        }
+      } else {
+        Write-LogLine -Tag "warn" -Message "source missing, skipping." -Color Yellow -Indent 4
+        continue
+      }
     }
 
     $desiredEntry = [pscustomobject]@{ to=$toExpanded; from=$fromResolved; mode=$mode }
