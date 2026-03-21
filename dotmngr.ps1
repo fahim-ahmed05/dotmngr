@@ -716,6 +716,47 @@ if ($Unlink) {
 
 # ---------------- Apply mode ----------------
 
+# When running default apply (no explicit -Package), disabled packages should
+# be treated as removed and cleaned up from state.
+if (-not ($Package -and $Package.Count -gt 0)) {
+  foreach ($pkgName in $packagesMap.Keys) {
+    if (Test-PackageEnabled -PackageObject $packagesMap[$pkgName]) { continue }
+    if (-not $state.packages.PSObject.Properties[$pkgName]) { continue }
+
+    Write-Host ""
+    Write-LogLine -Tag "disable" -Message ("{0} (enabled=false; cleaning managed links)" -f $pkgName) -Color Cyan
+
+    $disabledLinks = Get-StatePackageLinks -Name $pkgName
+
+    $disabledToKeys = @()
+    foreach ($prop in $disabledLinks.PSObject.Properties) {
+      $disabledToKeys += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
+    }
+
+    foreach ($toKeyInfo in $disabledToKeys) {
+      $toKey = $toKeyInfo.Name
+      $old = $toKeyInfo.Value
+      $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+      if ([string]::IsNullOrWhiteSpace($oldToVal)) {
+        $disabledLinks.PSObject.Properties.Remove($toKey)
+        continue
+      }
+      $oldTo = Resolve-DotmngrPath -Path ([string]$oldToVal)
+
+      Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
+      if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
+        Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir
+      } else {
+        Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
+      }
+
+      $disabledLinks.PSObject.Properties.Remove($toKey)
+    }
+
+    $state.packages.PSObject.Properties.Remove($pkgName)
+  }
+}
+
 foreach ($pkg in $selectedPackages) {
   if (-not $packagesMap.ContainsKey($pkg)) {
     Write-LogLine -Tag "warn" -Message ("package '{0}' not found in config." -f $pkg) -Color Yellow

@@ -45,6 +45,8 @@ Settings → Privacy & Security → For Developers → **Developer Mode** → ON
 .\dotmngr.ps1 -ConfigPath .\dotlinks.json
 ```
 
+When `enabled` is switched from `true` to `false`, a normal apply run treats that package as removed: previously managed links are safely cleaned up (only if they still match what dotmngr created), and its state is dropped.
+
 ### Apply specific packages
 
 ```powershell
