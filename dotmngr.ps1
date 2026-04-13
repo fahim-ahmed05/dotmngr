@@ -755,6 +755,47 @@ if (-not ($Package -and $Package.Count -gt 0)) {
 
     $state.packages.PSObject.Properties.Remove($pkgName)
   }
+
+  $orphanStatePackages = @()
+  foreach ($pkgProp in $state.packages.PSObject.Properties) {
+    if (-not $packagesMap.ContainsKey($pkgProp.Name)) {
+      $orphanStatePackages += $pkgProp.Name
+    }
+  }
+
+  foreach ($pkgName in $orphanStatePackages) {
+    Write-Host ""
+    Write-LogLine -Tag "orphan" -Message ("{0} (not in config; cleaning managed links)" -f $pkgName) -Color Cyan
+
+    $orphanLinks = Get-StatePackageLinks -Name $pkgName
+
+    $orphanToKeys = @()
+    foreach ($prop in $orphanLinks.PSObject.Properties) {
+      $orphanToKeys += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
+    }
+
+    foreach ($toKeyInfo in $orphanToKeys) {
+      $toKey = $toKeyInfo.Name
+      $old = $toKeyInfo.Value
+      $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+      if ([string]::IsNullOrWhiteSpace($oldToVal)) {
+        $orphanLinks.PSObject.Properties.Remove($toKey)
+        continue
+      }
+      $oldTo = Resolve-DotmngrPath -Path ([string]$oldToVal)
+
+      Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
+      if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
+        Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir
+      } else {
+        Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
+      }
+
+      $orphanLinks.PSObject.Properties.Remove($toKey)
+    }
+
+    $state.packages.PSObject.Properties.Remove($pkgName)
+  }
 }
 
 foreach ($pkg in $selectedPackages) {
@@ -872,6 +913,8 @@ foreach ($pkg in $selectedPackages) {
     $mode = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
     $from = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
     $to   = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+
+    try {
 
     Write-ItemHeader -Mode $mode -From $from -To $to
     New-ParentDirectoryIfMissing -Path $to
@@ -1009,6 +1052,11 @@ foreach ($pkg in $selectedPackages) {
       default {
         throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, push, seed, shortcut)"
       }
+    }
+    } catch {
+      $errMsg = $_.Exception.Message
+      Write-LogLine -Tag "error" -Message ("failed to process item (mode={0}): {1}" -f $mode, $errMsg) -Color Red -Indent 4
+      continue
     }
   }
 
