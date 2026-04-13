@@ -652,7 +652,41 @@ if ($Status) {
   if ($rows.Count -eq 0) {
     Write-Host "No tracked items found in state file: $statePath" -ForegroundColor Yellow
   } else {
-    $rows | Format-Table -AutoSize -Property Package, Mode, Status, To, From
+    $groupedRows = $rows | Sort-Object Package, To | Group-Object Package
+
+    foreach ($pkgGroup in $groupedRows) {
+      $pkgRows = @($pkgGroup.Group)
+      $okCount = @($pkgRows | Where-Object { $_.Status -eq "OK" }).Count
+      $driftedCount = @($pkgRows | Where-Object { $_.Status -eq "DRIFTED" }).Count
+      $missingCount = @($pkgRows | Where-Object { $_.Status -eq "MISSING" }).Count
+      $otherCount = $pkgRows.Count - $okCount - $driftedCount - $missingCount
+
+      $summary = "items={0} ok={1} drifted={2} missing={3}" -f $pkgRows.Count, $okCount, $driftedCount, $missingCount
+      if ($otherCount -gt 0) {
+        $summary = "{0} other={1}" -f $summary, $otherCount
+      }
+
+      $headerColor = "Cyan"
+      if ($missingCount -gt 0) {
+        $headerColor = "Red"
+      } elseif ($driftedCount -gt 0) {
+        $headerColor = "Yellow"
+      }
+
+      Write-Host ""
+      Write-LogLine -Tag "package" -Message ("{0} ({1})" -f $pkgGroup.Name, $summary) -Color $headerColor
+
+      $pkgRows |
+        Sort-Object -Property @{ Expression = {
+          switch ($_.Status) {
+            "DRIFTED" { 0 }
+            "MISSING" { 1 }
+            "OK"      { 2 }
+            default     { 3 }
+          }
+        } }, Mode, To |
+        Format-Table -AutoSize -Property Mode, Status, To
+    }
   }
   return
 }
