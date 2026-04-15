@@ -304,7 +304,7 @@ function Remove-ManagedDestination {
     [string]$TrashDir = ""
   )
 
-  if (!(Test-Path -LiteralPath $Path)) { return }
+  if (!(Test-Path -LiteralPath $Path)) { return $true }
 
   if (Test-ReparsePoint -Path $Path) {
     try {
@@ -318,23 +318,27 @@ function Remove-ManagedDestination {
       }
 
       Write-Host "    removed link/junction only." -ForegroundColor Yellow
+      return $true
     } catch {
       Write-LogLine -Tag "error" -Message ("failed to remove reparse point safely: {0}" -f $_.Exception.Message) -Color Red -Indent 4
+      return $false
     }
-    return
   }
 
   if ($UseTrash -and -not [string]::IsNullOrWhiteSpace($TrashDir)) {
     $moved = Move-ItemToTrashFolder -Path $Path -TrashDir $TrashDir
     if ($moved) {
       Write-Host "    moved to trash: $moved" -ForegroundColor Yellow
-      return
+      return $true
     }
   }
 
   if (Move-ItemToRecycleBin -Path $Path) {
     Write-Host "    sent to recycle bin." -ForegroundColor Yellow
+    return $true
   }
+
+  return $false
 }
 
 function Move-DestinationToSourceIfMissing {
@@ -811,7 +815,11 @@ if ($Unlink) {
 
       Write-Host ("  - {0}" -f $to) -ForegroundColor White
       if (Test-ShouldRemoveManagedLink -Destination $to -StateEntry $old) {
-        Remove-ManagedDestination -Path $to -UseTrash $globalTrash -TrashDir $globalTrashDir
+        $removed = Remove-ManagedDestination -Path $to -UseTrash $globalTrash -TrashDir $globalTrashDir
+        if (-not $removed -and (Test-Path -LiteralPath $to)) {
+          Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
+          continue
+        }
       } else {
         Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
       }
@@ -819,7 +827,11 @@ if ($Unlink) {
       $links.PSObject.Properties.Remove($toKey)
     }
 
-    $state.packages.PSObject.Properties.Remove($pkg)
+    if ($links.PSObject.Properties.Count -eq 0) {
+      $state.packages.PSObject.Properties.Remove($pkg)
+    } else {
+      Write-LogLine -Tag "warn" -Message ("state retained for package '{0}' because some items could not be removed." -f $pkg) -Color Yellow -Indent 2
+    }
   }
 
   $state.updated = (Get-Date).ToString("o")
@@ -860,7 +872,11 @@ if (-not ($Package -and $Package.Count -gt 0)) {
 
       Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
       if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
-        Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir
+        $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir
+        if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
+          Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
+          continue
+        }
       } else {
         Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
       }
@@ -868,7 +884,11 @@ if (-not ($Package -and $Package.Count -gt 0)) {
       $disabledLinks.PSObject.Properties.Remove($toKey)
     }
 
-    $state.packages.PSObject.Properties.Remove($pkgName)
+    if ($disabledLinks.PSObject.Properties.Count -eq 0) {
+      $state.packages.PSObject.Properties.Remove($pkgName)
+    } else {
+      Write-LogLine -Tag "warn" -Message ("state retained for package '{0}' because some items could not be removed." -f $pkgName) -Color Yellow -Indent 2
+    }
   }
 
   $orphanStatePackages = @()
@@ -901,7 +921,11 @@ if (-not ($Package -and $Package.Count -gt 0)) {
 
       Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
       if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
-        Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir
+        $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir
+        if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
+          Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
+          continue
+        }
       } else {
         Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
       }
@@ -909,7 +933,11 @@ if (-not ($Package -and $Package.Count -gt 0)) {
       $orphanLinks.PSObject.Properties.Remove($toKey)
     }
 
-    $state.packages.PSObject.Properties.Remove($pkgName)
+    if ($orphanLinks.PSObject.Properties.Count -eq 0) {
+      $state.packages.PSObject.Properties.Remove($pkgName)
+    } else {
+      Write-LogLine -Tag "warn" -Message ("state retained for package '{0}' because some items could not be removed." -f $pkgName) -Color Yellow -Indent 2
+    }
   }
 }
 
@@ -1024,7 +1052,11 @@ foreach ($pkg in $selectedPackages) {
 
     Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
     if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
-      Remove-ManagedDestination -Path $oldTo -UseTrash $useTrash -TrashDir $trashDir
+      $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $useTrash -TrashDir $trashDir
+      if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
+        Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
+        continue
+      }
     } else {
       Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
     }
@@ -1046,7 +1078,11 @@ foreach ($pkg in $selectedPackages) {
 
     if ($Force -and (Test-Path -LiteralPath $to)) {
       Write-LogLine -Tag "replace" -Message "removing destination before apply." -Color Yellow -Indent 4
-      Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+      $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+      if (-not $removed -and (Test-Path -LiteralPath $to)) {
+        Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+        continue
+      }
     }
 
     if ($mode -eq "seed") {
@@ -1078,24 +1114,40 @@ foreach ($pkg in $selectedPackages) {
             $needsCreate = $false
           } else {
             Write-LogLine -Tag "replace" -Message ("link points elsewhere ({0}), replacing." -f $target) -Color Yellow -Indent 4
-            Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+            $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+            if (-not $removed -and (Test-Path -LiteralPath $to)) {
+              Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+              continue
+            }
           }
         } else {
           Write-LogLine -Tag "replace" -Message "exists but is not a link, replacing." -Color Yellow -Indent 4
-          Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+          if (-not $removed -and (Test-Path -LiteralPath $to)) {
+            Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+            continue
+          }
         }
       }
       elseif ($mode -eq "hardlink") {
         if (Test-ReparsePoint -Path $to) {
           Write-LogLine -Tag "replace" -Message "is a reparse link, replacing with hardlink." -Color Yellow -Indent 4
-          Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+          if (-not $removed -and (Test-Path -LiteralPath $to)) {
+            Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+            continue
+          }
         } else {
           if (Test-HardlinkMatchesSource -Destination $to -Source $from) {
             Write-LogLine -Tag "skip" -Message "correct hardlink already exists." -Color Green -Indent 4
             $needsCreate = $false
           } else {
             Write-LogLine -Tag "replace" -Message "hardlink target mismatch, replacing." -Color Yellow -Indent 4
-            Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+            $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+            if (-not $removed -and (Test-Path -LiteralPath $to)) {
+              Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+              continue
+            }
           }
         }
       } elseif ($mode -eq "shortcut") {
@@ -1106,7 +1158,11 @@ foreach ($pkg in $selectedPackages) {
           $needsCreate = $false
         } else {
           Write-LogLine -Tag "replace" -Message ("shortcut points elsewhere ({0}), replacing." -f $targetResolved) -Color Yellow -Indent 4
-          Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+          if (-not $removed -and (Test-Path -LiteralPath $to)) {
+            Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+            continue
+          }
         }
       } else {
         throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
