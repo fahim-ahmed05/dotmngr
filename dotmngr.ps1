@@ -800,6 +800,35 @@ function Remove-StatePackageIfEmpty {
   }
 }
 
+function Test-ReplaceDestinationRemoval {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$DestinationPath,
+
+    [Parameter(Mandatory=$true)]
+    [string]$ManagedMode,
+
+    [Parameter(Mandatory=$true)]
+    [string]$ManagedSource,
+
+    [Parameter(Mandatory=$true)]
+    [bool]$UseTrash,
+
+    [Parameter()]
+    [string]$TrashDir = ""
+  )
+
+  $removed = Remove-ManagedDestination -Path $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir -ManagedMode $ManagedMode -ManagedSource $ManagedSource
+  if (-not $removed -and (Test-Path -LiteralPath $DestinationPath)) {
+    Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+    return $false
+  }
+
+  return $true
+}
+
 # Build package map
 $packagesMap = @{}
 foreach ($p in $config.packages.PSObject.Properties) {
@@ -1123,9 +1152,7 @@ foreach ($pkg in $selectedPackages) {
 
     if ($Force -and (Test-Path -LiteralPath $to)) {
       Write-LogLine -Tag "replace" -Message "removing destination before apply." -Color Yellow -Indent 4
-      $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
-      if (-not $removed -and (Test-Path -LiteralPath $to)) {
-        Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+      if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
         continue
       }
     }
@@ -1159,17 +1186,13 @@ foreach ($pkg in $selectedPackages) {
             $needsCreate = $false
           } else {
             Write-LogLine -Tag "replace" -Message ("link points elsewhere ({0}), replacing." -f $target) -Color Yellow -Indent 4
-            $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
-            if (-not $removed -and (Test-Path -LiteralPath $to)) {
-              Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+            if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
               continue
             }
           }
         } else {
           Write-LogLine -Tag "replace" -Message "exists but is not a link, replacing." -Color Yellow -Indent 4
-          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
-          if (-not $removed -and (Test-Path -LiteralPath $to)) {
-            Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+          if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
             continue
           }
         }
@@ -1177,9 +1200,7 @@ foreach ($pkg in $selectedPackages) {
       elseif ($mode -eq "hardlink") {
         if (Test-ReparsePoint -Path $to) {
           Write-LogLine -Tag "replace" -Message "is a reparse link, replacing with hardlink." -Color Yellow -Indent 4
-          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
-          if (-not $removed -and (Test-Path -LiteralPath $to)) {
-            Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+          if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
             continue
           }
         } else {
@@ -1188,9 +1209,7 @@ foreach ($pkg in $selectedPackages) {
             $needsCreate = $false
           } else {
             Write-LogLine -Tag "replace" -Message "hardlink target mismatch, replacing." -Color Yellow -Indent 4
-            $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
-            if (-not $removed -and (Test-Path -LiteralPath $to)) {
-              Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+            if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
               continue
             }
           }
@@ -1203,9 +1222,7 @@ foreach ($pkg in $selectedPackages) {
           $needsCreate = $false
         } else {
           Write-LogLine -Tag "replace" -Message ("shortcut points elsewhere ({0}), replacing." -f $targetResolved) -Color Yellow -Indent 4
-          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
-          if (-not $removed -and (Test-Path -LiteralPath $to)) {
-            Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
+          if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
             continue
           }
         }
