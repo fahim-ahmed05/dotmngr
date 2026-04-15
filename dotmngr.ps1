@@ -233,7 +233,20 @@ function Move-ItemToTrashFolder {
 
   $name  = Split-Path -Leaf $Path
   $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-  $dest  = Join-Path $TrashDir "$name.$stamp"
+
+  if (Test-Path -LiteralPath $Path -PathType Container) {
+    $destName = "$name.$stamp"
+  } else {
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($name)
+    $extension = [System.IO.Path]::GetExtension($name)
+    if ([string]::IsNullOrEmpty($extension)) {
+      $destName = "$name.$stamp"
+    } else {
+      $destName = "{0}_{1}{2}" -f $baseName, $stamp, $extension
+    }
+  }
+
+  $dest  = Join-Path $TrashDir $destName
 
   try {
     Move-Item -LiteralPath $Path -Destination $dest -Force
