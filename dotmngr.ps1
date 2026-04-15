@@ -308,6 +308,24 @@ function Remove-ManagedDestination {
 
   if (!(Test-Path -LiteralPath $Path)) { return }
 
+  if (Test-ReparsePoint -Path $Path) {
+    try {
+      if (Test-Path -LiteralPath $Path -PathType Container) {
+        cmd /c "rmdir `"$Path`"" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          throw "rmdir failed with exit code $LASTEXITCODE"
+        }
+      } else {
+        Remove-Item -LiteralPath $Path -Force
+      }
+
+      Write-Host "    removed link/junction only." -ForegroundColor Yellow
+    } catch {
+      Write-LogLine -Tag "error" -Message ("failed to remove reparse point safely: {0}" -f $_.Exception.Message) -Color Red -Indent 4
+    }
+    return
+  }
+
   if ($UseTrash) {
     $moved = Move-ItemToTrashFolder -Path $Path -TrashDir $TrashDir
     if ($moved) {
