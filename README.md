@@ -162,6 +162,11 @@ Example:
 | `trash`    | If `true`, replaced files are moved to `trashDir` |
 | `trashDir` | Folder where replaced files are stored            |
 
+Behavior notes:
+
+* If `global.trash` is `true` and `global.trashDir` is empty/missing, dotmngr uses `%USERPROFILE%\\Trash\\dotmngr`.
+* If `global.trash` is `false`, `trashDir` is ignored and removable non-link items go to Recycle Bin.
+
 ### `packages`
 
 Each package:

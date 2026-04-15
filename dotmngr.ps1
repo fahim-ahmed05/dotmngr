@@ -578,10 +578,19 @@ if ($null -eq $modeProperty) {
 
 $globalTrash   = [bool]($config.global | Select-Object -ExpandProperty trash -ErrorAction SilentlyContinue)
 $globalTrashDirVal = $config.global | Select-Object -ExpandProperty trashDir -ErrorAction SilentlyContinue
-$globalTrashDir = if ($globalTrashDirVal) { Resolve-DotmngrPath -Path ([string]$globalTrashDirVal) } else { "" }
+
+if ($globalTrash) {
+  if ([string]::IsNullOrWhiteSpace([string]$globalTrashDirVal)) {
+    $globalTrashDir = Resolve-DotmngrPath -Path "%USERPROFILE%\Trash\dotmngr"
+  } else {
+    $globalTrashDir = Resolve-DotmngrPath -Path ([string]$globalTrashDirVal)
+  }
+} else {
+  $globalTrashDir = ""
+}
 
 # Create trash dir upfront if needed
-if ($globalTrash -and $globalTrashDir) {
+if ($globalTrash -and -not [string]::IsNullOrWhiteSpace($globalTrashDir)) {
   New-DirectoryIfMissing -Path $globalTrashDir
 }
 
