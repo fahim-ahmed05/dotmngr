@@ -26,7 +26,6 @@ Modes:
   symlink   - Symbolic link (file/dir)
   junction  - Junction (dir)
   hardlink  - Hard link (file, same volume)
-  push      - Push source changes to destination via robocopy (/XO skips newer destination files)
   seed      - Copy only if destination doesn’t exist (file/dir)
   shortcut  - Windows .lnk shortcut (file/dir)
 Switches:
@@ -301,9 +300,8 @@ function Remove-ManagedDestination {
     [Parameter(Mandatory=$true)]
     [bool]$UseTrash,
 
-    [Parameter(Mandatory=$true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$TrashDir
+    [Parameter()]
+    [string]$TrashDir = ""
   )
 
   if (!(Test-Path -LiteralPath $Path)) { return }
@@ -326,19 +324,16 @@ function Remove-ManagedDestination {
     return
   }
 
-  if ($UseTrash) {
+  if ($UseTrash -and -not [string]::IsNullOrWhiteSpace($TrashDir)) {
     $moved = Move-ItemToTrashFolder -Path $Path -TrashDir $TrashDir
     if ($moved) {
       Write-Host "    moved to trash: $moved" -ForegroundColor Yellow
-    } else {
-      if (Move-ItemToRecycleBin -Path $Path) {
-        Write-Host "    sent to recycle bin." -ForegroundColor Yellow
-      }
+      return
     }
-  } else {
-    if (Move-ItemToRecycleBin -Path $Path) {
-      Write-Host "    sent to recycle bin." -ForegroundColor Yellow
-    }
+  }
+
+  if (Move-ItemToRecycleBin -Path $Path) {
+    Write-Host "    sent to recycle bin." -ForegroundColor Yellow
   }
 }
 
@@ -443,7 +438,7 @@ function Test-ShouldRemoveManagedLink {
     return ($targetResolved -eq $from)
   }
 
-  # We do not auto-remove push/seed destinations.
+  # We do not auto-remove seed destinations.
   return $false
 }
 
@@ -490,7 +485,7 @@ function Get-TrackedItemStatus {
       return "DRIFTED"
     }
     default {
-      # For push/seed and unknown modes, existence is the best available signal.
+      # For seed and unknown modes, existence is the best available signal.
       return "OK"
     }
   }
@@ -995,7 +990,17 @@ foreach ($pkg in $selectedPackages) {
   
   foreach ($propInfo in $propNames) {
     $toKey = $propInfo.Name
-    if ($desired.ContainsKey($toKey)) { continue }
+    if ($desired.ContainsKey($toKey)) {
+      $desiredModeVal = $desired[$toKey] | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+      $desiredMode = if ($desiredModeVal) { ([string]$desiredModeVal).ToLower() } else { "" }
+
+      if ($desiredMode -eq "seed") {
+        # seed is intentionally untracked; drop any stale tracked state entry.
+        Write-LogLine -Tag "untrack" -Message ("{0} (seed mode)" -f $toKey) -Color Cyan -Indent 2
+        $links.PSObject.Properties.Remove($toKey)
+      }
+      continue
+    }
 
     $old = $propInfo.Value
     $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
@@ -1052,27 +1057,6 @@ foreach ($pkg in $selectedPackages) {
       continue
     }
 
-    if ($mode -eq "push") {
-      if (Test-Path -LiteralPath $to -and (Test-ReparsePoint -Path $to)) {
-        Write-LogLine -Tag "replace" -Message "destination is a link; removing before push." -Color Yellow -Indent 4
-        Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
-      }
-
-      if (Test-Path -LiteralPath $from -PathType Container) {
-        New-DirectoryIfMissing -Path $to
-        Invoke-RobocopySafe -Source $from -Destination $to -Arguments @("/E","/XO","/R:1","/W:1","/NFL","/NDL")
-        Write-LogLine -Tag "create" -Message "push completed (robocopy)." -Color Green -Indent 4
-      } else {
-        New-ParentDirectoryIfMissing -Path $to
-        $srcDir = Split-Path -Parent $from
-        $dstDir = Split-Path -Parent $to
-        $name   = Split-Path -Leaf $from
-        Invoke-RobocopySafe -Source $srcDir -Destination $dstDir -Arguments @($name,"/XO","/R:1","/W:1","/NFL","/NDL")
-        Write-LogLine -Tag "create" -Message "file pushed (robocopy)." -Color Green -Indent 4
-      }
-      continue
-    }
-
     # Link modes (tracked)
     $needsCreate = $true
 
@@ -1116,7 +1100,7 @@ foreach ($pkg in $selectedPackages) {
           Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
         }
       } else {
-        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, push, seed, shortcut)"
+        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
       }
     }
 
@@ -1161,7 +1145,7 @@ foreach ($pkg in $selectedPackages) {
         $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
       }
       default {
-        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, push, seed, shortcut)"
+        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
       }
     }
     } catch {
