@@ -793,7 +793,8 @@ function Remove-StatePackageIfEmpty {
     $LinksObject
   )
 
-  if ($LinksObject.PSObject.Properties.Count -eq 0) {
+  $linkCount = @($LinksObject.PSObject.Properties).Count
+  if ($linkCount -eq 0) {
     $state.packages.PSObject.Properties.Remove($PackageName)
   } else {
     Write-LogLine -Tag "warn" -Message ("state retained for package '{0}' because some items could not be removed." -f $PackageName) -Color Yellow -Indent 2
