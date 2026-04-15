@@ -725,6 +725,81 @@ function Get-StatePackageLinks {
   return $pkgState.links
 }
 
+function Get-StateLinkEntries {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    $LinksObject
+  )
+
+  $entries = @()
+  foreach ($prop in $LinksObject.PSObject.Properties) {
+    $entries += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
+  }
+
+  return $entries
+}
+
+function Invoke-TrackedEntryCleanup {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    [pscustomobject]$StateEntry,
+
+    [Parameter(Mandatory=$true)]
+    [bool]$UseTrash,
+
+    [Parameter()]
+    [string]$TrashDir = "",
+
+    [Parameter()]
+    [ValidateSet("cleanup", "bullet")]
+    [string]$PathOutputStyle = "cleanup"
+  )
+
+  $oldToVal = $StateEntry | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+  if ([string]::IsNullOrWhiteSpace($oldToVal)) { return $true }
+
+  $oldTo = Resolve-DotmngrPath -Path ([string]$oldToVal)
+
+  if ($PathOutputStyle -eq "bullet") {
+    Write-Host ("  - {0}" -f $oldTo) -ForegroundColor White
+  } else {
+    Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
+  }
+
+  if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $StateEntry) {
+    $entryMode = [string]($StateEntry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)
+    $entrySource = [string]($StateEntry | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue)
+    $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $UseTrash -TrashDir $TrashDir -ManagedMode $entryMode -ManagedSource $entrySource
+    if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
+      Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
+      return $false
+    }
+  } else {
+    Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
+  }
+
+  return $true
+}
+
+function Remove-StatePackageIfEmpty {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    [string]$PackageName,
+
+    [Parameter(Mandatory=$true)]
+    $LinksObject
+  )
+
+  if ($LinksObject.PSObject.Properties.Count -eq 0) {
+    $state.packages.PSObject.Properties.Remove($PackageName)
+  } else {
+    Write-LogLine -Tag "warn" -Message ("state retained for package '{0}' because some items could not be removed." -f $PackageName) -Color Yellow -Indent 2
+  }
+}
+
 # Build package map
 $packagesMap = @{}
 foreach ($p in $config.packages.PSObject.Properties) {
@@ -852,40 +927,19 @@ if ($Unlink) {
       Write-LogLine -Tag "unlink" -Message $pkg -Color Cyan
     $links = Get-StatePackageLinks -Name $pkg
 
-    $toKeys = @()
-    foreach ($prop in $links.PSObject.Properties) {
-      $toKeys += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
-    }
+    $toKeys = Get-StateLinkEntries -LinksObject $links
     
     foreach ($toKeyInfo in $toKeys) {
       $toKey = $toKeyInfo.Name
       $old = $toKeyInfo.Value
-      $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
-      if ([string]::IsNullOrWhiteSpace($oldToVal)) {
+
+      $removeStateEntry = Invoke-TrackedEntryCleanup -StateEntry $old -UseTrash $globalTrash -TrashDir $globalTrashDir -PathOutputStyle "bullet"
+      if ($removeStateEntry) {
         $links.PSObject.Properties.Remove($toKey)
-        continue
       }
-      $to  = Resolve-DotmngrPath -Path ([string]$oldToVal)
-
-      Write-Host ("  - {0}" -f $to) -ForegroundColor White
-      if (Test-ShouldRemoveManagedLink -Destination $to -StateEntry $old) {
-        $removed = Remove-ManagedDestination -Path $to -UseTrash $globalTrash -TrashDir $globalTrashDir -ManagedMode ([string]($old | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)) -ManagedSource ([string]($old | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue))
-        if (-not $removed -and (Test-Path -LiteralPath $to)) {
-          Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
-          continue
-        }
-      } else {
-        Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
-      }
-
-      $links.PSObject.Properties.Remove($toKey)
     }
 
-    if ($links.PSObject.Properties.Count -eq 0) {
-      $state.packages.PSObject.Properties.Remove($pkg)
-    } else {
-      Write-LogLine -Tag "warn" -Message ("state retained for package '{0}' because some items could not be removed." -f $pkg) -Color Yellow -Indent 2
-    }
+    Remove-StatePackageIfEmpty -PackageName $pkg -LinksObject $links
   }
 
   $state.updated = (Get-Date).ToString("o")
@@ -909,40 +963,19 @@ if (-not ($Package -and $Package.Count -gt 0)) {
 
     $disabledLinks = Get-StatePackageLinks -Name $pkgName
 
-    $disabledToKeys = @()
-    foreach ($prop in $disabledLinks.PSObject.Properties) {
-      $disabledToKeys += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
-    }
+    $disabledToKeys = Get-StateLinkEntries -LinksObject $disabledLinks
 
     foreach ($toKeyInfo in $disabledToKeys) {
       $toKey = $toKeyInfo.Name
       $old = $toKeyInfo.Value
-      $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
-      if ([string]::IsNullOrWhiteSpace($oldToVal)) {
+
+      $removeStateEntry = Invoke-TrackedEntryCleanup -StateEntry $old -UseTrash $globalTrash -TrashDir $globalTrashDir
+      if ($removeStateEntry) {
         $disabledLinks.PSObject.Properties.Remove($toKey)
-        continue
       }
-      $oldTo = Resolve-DotmngrPath -Path ([string]$oldToVal)
-
-      Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
-      if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
-        $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir -ManagedMode ([string]($old | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)) -ManagedSource ([string]($old | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue))
-        if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
-          Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
-          continue
-        }
-      } else {
-        Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
-      }
-
-      $disabledLinks.PSObject.Properties.Remove($toKey)
     }
 
-    if ($disabledLinks.PSObject.Properties.Count -eq 0) {
-      $state.packages.PSObject.Properties.Remove($pkgName)
-    } else {
-      Write-LogLine -Tag "warn" -Message ("state retained for package '{0}' because some items could not be removed." -f $pkgName) -Color Yellow -Indent 2
-    }
+    Remove-StatePackageIfEmpty -PackageName $pkgName -LinksObject $disabledLinks
   }
 
   $orphanStatePackages = @()
@@ -958,40 +991,19 @@ if (-not ($Package -and $Package.Count -gt 0)) {
 
     $orphanLinks = Get-StatePackageLinks -Name $pkgName
 
-    $orphanToKeys = @()
-    foreach ($prop in $orphanLinks.PSObject.Properties) {
-      $orphanToKeys += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
-    }
+    $orphanToKeys = Get-StateLinkEntries -LinksObject $orphanLinks
 
     foreach ($toKeyInfo in $orphanToKeys) {
       $toKey = $toKeyInfo.Name
       $old = $toKeyInfo.Value
-      $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
-      if ([string]::IsNullOrWhiteSpace($oldToVal)) {
+
+      $removeStateEntry = Invoke-TrackedEntryCleanup -StateEntry $old -UseTrash $globalTrash -TrashDir $globalTrashDir
+      if ($removeStateEntry) {
         $orphanLinks.PSObject.Properties.Remove($toKey)
-        continue
       }
-      $oldTo = Resolve-DotmngrPath -Path ([string]$oldToVal)
-
-      Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
-      if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
-        $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir -ManagedMode ([string]($old | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)) -ManagedSource ([string]($old | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue))
-        if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
-          Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
-          continue
-        }
-      } else {
-        Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
-      }
-
-      $orphanLinks.PSObject.Properties.Remove($toKey)
     }
 
-    if ($orphanLinks.PSObject.Properties.Count -eq 0) {
-      $state.packages.PSObject.Properties.Remove($pkgName)
-    } else {
-      Write-LogLine -Tag "warn" -Message ("state retained for package '{0}' because some items could not be removed." -f $pkgName) -Color Yellow -Indent 2
-    }
+    Remove-StatePackageIfEmpty -PackageName $pkgName -LinksObject $orphanLinks
   }
 }
 
@@ -1074,10 +1086,7 @@ foreach ($pkg in $selectedPackages) {
   # Cleanup managed destinations removed from this package
   $links = Get-StatePackageLinks -Name $pkg
   
-  $propNames = @()
-  foreach ($prop in $links.PSObject.Properties) {
-    $propNames += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
-  }
+  $propNames = Get-StateLinkEntries -LinksObject $links
   
   foreach ($propInfo in $propNames) {
     $toKey = $propInfo.Name
@@ -1094,28 +1103,10 @@ foreach ($pkg in $selectedPackages) {
     }
 
     $old = $propInfo.Value
-    $oldToVal = $old | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
-    
-    # Silently clean up malformed/corrupted state entries
-    if ([string]::IsNullOrWhiteSpace($oldToVal)) {
+    $removeStateEntry = Invoke-TrackedEntryCleanup -StateEntry $old -UseTrash $useTrash -TrashDir $trashDir
+    if ($removeStateEntry) {
       $links.PSObject.Properties.Remove($toKey)
-      continue
     }
-    
-    $oldTo = Resolve-DotmngrPath -Path ([string]$oldToVal)
-
-    Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
-    if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
-      $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $useTrash -TrashDir $trashDir -ManagedMode ([string]($old | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)) -ManagedSource ([string]($old | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue))
-      if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
-        Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
-        continue
-      }
-    } else {
-      Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
-    }
-
-    $links.PSObject.Properties.Remove($toKey)
   }
 
   # Apply desired
