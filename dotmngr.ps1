@@ -235,8 +235,47 @@ function Move-ItemToTrashFolder {
   $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
   $dest  = Join-Path $TrashDir "$name.$stamp"
 
-  Move-Item -LiteralPath $Path -Destination $dest -Force
-  return $dest
+  try {
+    Move-Item -LiteralPath $Path -Destination $dest -Force
+    return $dest
+  } catch {
+    Write-LogLine -Tag "warn" -Message ("could not move to trash: {0}" -f $_.Exception.Message) -Color Yellow -Indent 4
+    return $null
+  }
+}
+
+function Move-ItemToRecycleBin {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Path
+  )
+
+  Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop
+
+  try {
+    if (Test-Path -LiteralPath $Path -PathType Container) {
+      [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(
+        $Path,
+        [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+        [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin,
+        [Microsoft.VisualBasic.FileIO.UICancelOption]::ThrowException
+      )
+    } else {
+      [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+        $Path,
+        [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+        [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin,
+        [Microsoft.VisualBasic.FileIO.UICancelOption]::ThrowException
+      )
+    }
+
+    return $true
+  } catch {
+    Write-LogLine -Tag "error" -Message ("could not send to recycle bin: {0}" -f $_.Exception.Message) -Color Red -Indent 4
+    return $false
+  }
 }
 
 function Remove-ManagedDestination {
@@ -258,10 +297,17 @@ function Remove-ManagedDestination {
 
   if ($UseTrash) {
     $moved = Move-ItemToTrashFolder -Path $Path -TrashDir $TrashDir
-        Write-Host "    moved to trash: $moved" -ForegroundColor Yellow
+    if ($moved) {
+      Write-Host "    moved to trash: $moved" -ForegroundColor Yellow
+    } else {
+      if (Move-ItemToRecycleBin -Path $Path) {
+        Write-Host "    sent to recycle bin." -ForegroundColor Yellow
+      }
+    }
   } else {
-    Remove-Item -LiteralPath $Path -Recurse -Force
-    Write-Host "    removed." -ForegroundColor Yellow
+    if (Move-ItemToRecycleBin -Path $Path) {
+      Write-Host "    sent to recycle bin." -ForegroundColor Yellow
+    }
   }
 }
 
