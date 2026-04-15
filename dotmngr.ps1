@@ -302,10 +302,35 @@ function Remove-ManagedDestination {
     [bool]$UseTrash,
 
     [Parameter()]
-    [string]$TrashDir = ""
+    [string]$TrashDir = "",
+
+    [Parameter()]
+    [string]$ManagedMode = "",
+
+    [Parameter()]
+    [string]$ManagedSource = ""
   )
 
   if (!(Test-Path -LiteralPath $Path)) { return $true }
+
+  $managedModeText = ([string]$ManagedMode).ToLower()
+  if (
+    $managedModeText -eq "hardlink" -and
+    -not (Test-Path -LiteralPath $Path -PathType Container) -and
+    -not (Test-ReparsePoint -Path $Path)
+  ) {
+    $sourceResolved = if ([string]::IsNullOrWhiteSpace($ManagedSource)) { "" } else { Resolve-DotmngrPath -Path $ManagedSource }
+    if ($sourceResolved -and (Test-HardlinkMatchesSource -Destination $Path -Source $sourceResolved)) {
+      try {
+        Remove-Item -LiteralPath $Path -Force
+        Write-Host "    removed hardlink only." -ForegroundColor Yellow
+        return $true
+      } catch {
+        Write-LogLine -Tag "error" -Message ("failed to remove hardlink safely: {0}" -f $_.Exception.Message) -Color Red -Indent 4
+        return $false
+      }
+    }
+  }
 
   if (Test-ReparsePoint -Path $Path) {
     try {
@@ -398,7 +423,7 @@ function Move-DestinationToSourceIfMissing {
 
   Write-LogLine -Tag "recover" -Message ("source missing; copied destination to source: {0}" -f $SourcePath) -Color Yellow -Indent 4
 
-  $archived = Remove-ManagedDestination -Path $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir
+  $archived = Remove-ManagedDestination -Path $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir -ManagedMode $Mode -ManagedSource $SourcePath
   if (-not $archived -and (Test-Path -LiteralPath $DestinationPath)) {
     Write-LogLine -Tag "warn" -Message "original destination could not be archived after copy; leaving it in place." -Color Yellow -Indent 4
   }
@@ -844,7 +869,7 @@ if ($Unlink) {
 
       Write-Host ("  - {0}" -f $to) -ForegroundColor White
       if (Test-ShouldRemoveManagedLink -Destination $to -StateEntry $old) {
-        $removed = Remove-ManagedDestination -Path $to -UseTrash $globalTrash -TrashDir $globalTrashDir
+        $removed = Remove-ManagedDestination -Path $to -UseTrash $globalTrash -TrashDir $globalTrashDir -ManagedMode ([string]($old | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)) -ManagedSource ([string]($old | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue))
         if (-not $removed -and (Test-Path -LiteralPath $to)) {
           Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
           continue
@@ -901,7 +926,7 @@ if (-not ($Package -and $Package.Count -gt 0)) {
 
       Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
       if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
-        $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir
+        $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir -ManagedMode ([string]($old | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)) -ManagedSource ([string]($old | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue))
         if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
           Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
           continue
@@ -950,7 +975,7 @@ if (-not ($Package -and $Package.Count -gt 0)) {
 
       Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
       if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
-        $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir
+        $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $globalTrash -TrashDir $globalTrashDir -ManagedMode ([string]($old | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)) -ManagedSource ([string]($old | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue))
         if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
           Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
           continue
@@ -1081,7 +1106,7 @@ foreach ($pkg in $selectedPackages) {
 
     Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
     if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $old) {
-      $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $useTrash -TrashDir $trashDir
+      $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $useTrash -TrashDir $trashDir -ManagedMode ([string]($old | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)) -ManagedSource ([string]($old | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue))
       if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
         Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
         continue
@@ -1107,7 +1132,7 @@ foreach ($pkg in $selectedPackages) {
 
     if ($Force -and (Test-Path -LiteralPath $to)) {
       Write-LogLine -Tag "replace" -Message "removing destination before apply." -Color Yellow -Indent 4
-      $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+      $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
       if (-not $removed -and (Test-Path -LiteralPath $to)) {
         Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
         continue
@@ -1143,7 +1168,7 @@ foreach ($pkg in $selectedPackages) {
             $needsCreate = $false
           } else {
             Write-LogLine -Tag "replace" -Message ("link points elsewhere ({0}), replacing." -f $target) -Color Yellow -Indent 4
-            $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+            $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
             if (-not $removed -and (Test-Path -LiteralPath $to)) {
               Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
               continue
@@ -1151,7 +1176,7 @@ foreach ($pkg in $selectedPackages) {
           }
         } else {
           Write-LogLine -Tag "replace" -Message "exists but is not a link, replacing." -Color Yellow -Indent 4
-          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
           if (-not $removed -and (Test-Path -LiteralPath $to)) {
             Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
             continue
@@ -1161,7 +1186,7 @@ foreach ($pkg in $selectedPackages) {
       elseif ($mode -eq "hardlink") {
         if (Test-ReparsePoint -Path $to) {
           Write-LogLine -Tag "replace" -Message "is a reparse link, replacing with hardlink." -Color Yellow -Indent 4
-          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
           if (-not $removed -and (Test-Path -LiteralPath $to)) {
             Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
             continue
@@ -1172,7 +1197,7 @@ foreach ($pkg in $selectedPackages) {
             $needsCreate = $false
           } else {
             Write-LogLine -Tag "replace" -Message "hardlink target mismatch, replacing." -Color Yellow -Indent 4
-            $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+            $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
             if (-not $removed -and (Test-Path -LiteralPath $to)) {
               Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
               continue
@@ -1187,7 +1212,7 @@ foreach ($pkg in $selectedPackages) {
           $needsCreate = $false
         } else {
           Write-LogLine -Tag "replace" -Message ("shortcut points elsewhere ({0}), replacing." -f $targetResolved) -Color Yellow -Indent 4
-          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir
+          $removed = Remove-ManagedDestination -Path $to -UseTrash $useTrash -TrashDir $trashDir -ManagedMode $mode -ManagedSource $from
           if (-not $removed -and (Test-Path -LiteralPath $to)) {
             Write-LogLine -Tag "error" -Message "replacement skipped because existing destination could not be removed." -Color Red -Indent 4
             continue
