@@ -355,7 +355,7 @@ function Move-DestinationToSourceIfMissing {
 
     [Parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
-    [string]$Mode
+    [string]$Mode,
 
     [Parameter()]
     [bool]$UseTrash = $false,
@@ -381,7 +381,8 @@ function Move-DestinationToSourceIfMissing {
   New-ParentDirectoryIfMissing -Path $SourcePath
   try {
     if (Test-Path -LiteralPath $DestinationPath -PathType Container) {
-      Copy-Item -LiteralPath $DestinationPath -Destination $SourcePath -Recurse -Force
+      New-DirectoryIfMissing -Path $SourcePath
+      Invoke-RobocopySafe -Source $DestinationPath -Destination $SourcePath -Arguments @("/E","/R:1","/W:1","/NFL","/NDL")
     } else {
       Copy-Item -LiteralPath $DestinationPath -Destination $SourcePath -Force
     }
