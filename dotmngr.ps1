@@ -925,6 +925,98 @@ function Invoke-SeedApplyIfNeeded {
   return $true
 }
 
+function Get-ApplyDestinationDecision {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    [string]$Mode,
+
+    [Parameter(Mandatory=$true)]
+    [string]$SourcePath,
+
+    [Parameter(Mandatory=$true)]
+    [string]$DestinationPath,
+
+    [Parameter(Mandatory=$true)]
+    [bool]$UseTrash,
+
+    [Parameter()]
+    [string]$TrashDir = ""
+  )
+
+  $result = [pscustomobject]@{
+    Proceed = $true
+    NeedsCreate = $true
+  }
+
+  if (-not (Test-Path -LiteralPath $DestinationPath)) {
+    return $result
+  }
+
+  if ($Mode -eq "symlink" -or $Mode -eq "junction") {
+    if (Test-ReparsePoint -Path $DestinationPath) {
+      $target = Get-LinkTargetPath -Path $DestinationPath
+      if ($target -eq $SourcePath) {
+        Write-LogLine -Tag "skip" -Message "correct link already exists." -Color Green -Indent 4
+        $result.NeedsCreate = $false
+        return $result
+      }
+
+      Write-LogLine -Tag "replace" -Message ("link points elsewhere ({0}), replacing." -f $target) -Color Yellow -Indent 4
+      if (-not (Test-ReplaceDestinationRemoval -DestinationPath $DestinationPath -ManagedMode $Mode -ManagedSource $SourcePath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+        $result.Proceed = $false
+      }
+      return $result
+    }
+
+    Write-LogLine -Tag "replace" -Message "exists but is not a link, replacing." -Color Yellow -Indent 4
+    if (-not (Test-ReplaceDestinationRemoval -DestinationPath $DestinationPath -ManagedMode $Mode -ManagedSource $SourcePath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+      $result.Proceed = $false
+    }
+    return $result
+  }
+
+  if ($Mode -eq "hardlink") {
+    if (Test-ReparsePoint -Path $DestinationPath) {
+      Write-LogLine -Tag "replace" -Message "is a reparse link, replacing with hardlink." -Color Yellow -Indent 4
+      if (-not (Test-ReplaceDestinationRemoval -DestinationPath $DestinationPath -ManagedMode $Mode -ManagedSource $SourcePath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+        $result.Proceed = $false
+      }
+      return $result
+    }
+
+    if (Test-HardlinkMatchesSource -Destination $DestinationPath -Source $SourcePath) {
+      Write-LogLine -Tag "skip" -Message "correct hardlink already exists." -Color Green -Indent 4
+      $result.NeedsCreate = $false
+      return $result
+    }
+
+    Write-LogLine -Tag "replace" -Message "hardlink target mismatch, replacing." -Color Yellow -Indent 4
+    if (-not (Test-ReplaceDestinationRemoval -DestinationPath $DestinationPath -ManagedMode $Mode -ManagedSource $SourcePath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+      $result.Proceed = $false
+    }
+    return $result
+  }
+
+  if ($Mode -eq "shortcut") {
+    $target = Get-ShortcutTarget -Path $DestinationPath
+    $targetResolved = if ($null -ne $target) { Resolve-DotmngrPath -Path ([string]$target) } else { $null }
+    if ($null -ne $targetResolved -and $targetResolved -eq $SourcePath) {
+      Write-LogLine -Tag "skip" -Message "correct shortcut already exists." -Color Green -Indent 4
+      $result.NeedsCreate = $false
+      return $result
+    }
+
+    Write-LogLine -Tag "replace" -Message ("shortcut points elsewhere ({0}), replacing." -f $targetResolved) -Color Yellow -Indent 4
+    if (-not (Test-ReplaceDestinationRemoval -DestinationPath $DestinationPath -ManagedMode $Mode -ManagedSource $SourcePath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+      $result.Proceed = $false
+    }
+    return $result
+  }
+
+  throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, seed, shortcut)"
+}
+
 function Invoke-CreateTrackedLinkForMode {
   [CmdletBinding()]
   param(
@@ -1285,61 +1377,11 @@ foreach ($pkg in $selectedPackages) {
       }
 
       # Link modes (tracked)
-      $needsCreate = $true
-
-      if (Test-Path -LiteralPath $to) {
-        if ($mode -eq "symlink" -or $mode -eq "junction") {
-          if (Test-ReparsePoint -Path $to) {
-            $target = Get-LinkTargetPath -Path $to
-            if ($target -eq $from) {
-              Write-LogLine -Tag "skip" -Message "correct link already exists." -Color Green -Indent 4
-              $needsCreate = $false
-            } else {
-              Write-LogLine -Tag "replace" -Message ("link points elsewhere ({0}), replacing." -f $target) -Color Yellow -Indent 4
-              if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-                continue
-              }
-            }
-          } else {
-            Write-LogLine -Tag "replace" -Message "exists but is not a link, replacing." -Color Yellow -Indent 4
-            if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-              continue
-            }
-          }
-        }
-        elseif ($mode -eq "hardlink") {
-          if (Test-ReparsePoint -Path $to) {
-            Write-LogLine -Tag "replace" -Message "is a reparse link, replacing with hardlink." -Color Yellow -Indent 4
-            if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-              continue
-            }
-          } else {
-            if (Test-HardlinkMatchesSource -Destination $to -Source $from) {
-              Write-LogLine -Tag "skip" -Message "correct hardlink already exists." -Color Green -Indent 4
-              $needsCreate = $false
-            } else {
-              Write-LogLine -Tag "replace" -Message "hardlink target mismatch, replacing." -Color Yellow -Indent 4
-              if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-                continue
-              }
-            }
-          }
-        } elseif ($mode -eq "shortcut") {
-          $target = Get-ShortcutTarget -Path $to
-          $targetResolved = if ($null -ne $target) { Resolve-DotmngrPath -Path ([string]$target) } else { $null }
-          if ($null -ne $targetResolved -and $targetResolved -eq $from) {
-            Write-LogLine -Tag "skip" -Message "correct shortcut already exists." -Color Green -Indent 4
-            $needsCreate = $false
-          } else {
-            Write-LogLine -Tag "replace" -Message ("shortcut points elsewhere ({0}), replacing." -f $targetResolved) -Color Yellow -Indent 4
-            if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-              continue
-            }
-          }
-        } else {
-          throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
-        }
+      $decision = Get-ApplyDestinationDecision -Mode $mode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir
+      if (-not $decision.Proceed) {
+        continue
       }
+      $needsCreate = [bool]$decision.NeedsCreate
 
       if (-not $needsCreate) {
         Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
