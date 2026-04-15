@@ -973,11 +973,11 @@ if ($Unlink) {
 
   foreach ($pkg in $unlinkPkgs) {
     if (-not $state.packages.PSObject.Properties[$pkg]) {
-        Write-LogLine -Tag "unlink" -Message ("{0} (no state)" -f $pkg) -Color Yellow
+      Write-LogLine -Tag "unlink" -Message ("{0} (no state)" -f $pkg) -Color Yellow
       continue
     }
 
-      Write-LogLine -Tag "unlink" -Message $pkg -Color Cyan
+    Write-LogLine -Tag "unlink" -Message $pkg -Color Cyan
     $links = Get-StatePackageLinks -Name $pkg
 
     $toKeys = Get-StateLinkEntries -LinksObject $links
@@ -1127,178 +1127,177 @@ foreach ($pkg in $selectedPackages) {
       $scDesc     = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
       $scIcon     = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
       $scWinStyle = $it | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
-      if ($null -ne $scWorkDir)  { $desiredEntry | Add-Member -MemberType NoteProperty -Name workingDirectory -Value ([string]$scWorkDir) }
-      if ($null -ne $scArgs)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name arguments        -Value ([string]$scArgs) }
-      if ($null -ne $scDesc)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name description      -Value ([string]$scDesc) }
-      if ($null -ne $scIcon)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name iconLocation     -Value ([string]$scIcon) }
-      if ($null -ne $scWinStyle) { $desiredEntry | Add-Member -MemberType NoteProperty -Name windowStyle      -Value (Resolve-WindowStyle $scWinStyle) }
-    }
-    $desired[$toExpanded] = $desiredEntry
+        Write-ItemHeader -Mode $mode -From $from -To $to
+        New-ParentDirectoryIfMissing -Path $to
+
+        if ($Force -and (Test-Path -LiteralPath $to)) {
+          Write-LogLine -Tag "replace" -Message "removing destination before apply." -Color Yellow -Indent 4
+          if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
+            continue
+          }
+        }
+
+        if ($mode -eq "seed") {
+          if (Test-Path -LiteralPath $to) {
+            Write-LogLine -Tag "skip" -Message "destination exists, skipping (seed)." -Color Green -Indent 4
+            continue
+          }
+
+          if (Test-Path -LiteralPath $from -PathType Container) {
+            New-DirectoryIfMissing -Path $to
+            Invoke-RobocopySafe -Source $from -Destination $to -Arguments @("/E","/R:1","/W:1","/NFL","/NDL")
+            Write-LogLine -Tag "create" -Message "directory copied once." -Color Green -Indent 4
+          } else {
+            Copy-Item -LiteralPath $from -Destination $to -Force
+            Write-LogLine -Tag "create" -Message "file copied once." -Color Green -Indent 4
+          }
   }
 
-  # Cleanup managed destinations removed from this package
-  $links = Get-StatePackageLinks -Name $pkg
-  
-  $propNames = Get-StateLinkEntries -LinksObject $links
-  
-  foreach ($propInfo in $propNames) {
-    $toKey = $propInfo.Name
-    if ($desired.ContainsKey($toKey)) {
-      $desiredModeVal = $desired[$toKey] | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
-      $desiredMode = if ($desiredModeVal) { ([string]$desiredModeVal).ToLower() } else { "" }
 
-      if ($desiredMode -eq "seed") {
-        # seed is intentionally untracked; drop any stale tracked state entry.
-        Write-LogLine -Tag "untrack" -Message ("{0} (seed mode)" -f $toKey) -Color Cyan -Indent 2
-        $links.PSObject.Properties.Remove($toKey)
-      }
-      continue
-    }
+        # Link modes (tracked)
+        $needsCreate = $true
 
-    $old = $propInfo.Value
-    $removeStateEntry = Invoke-TrackedEntryCleanup -StateEntry $old -UseTrash $useTrash -TrashDir $trashDir
-    if ($removeStateEntry) {
-      $links.PSObject.Properties.Remove($toKey)
-    }
-  }
-
-  # Apply desired
-  foreach ($toKey in $desired.Keys) {
-    $it   = $desired[$toKey]
-    $mode = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
-    $from = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
-    $to   = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $to) {
+          if ($mode -eq "symlink" -or $mode -eq "junction") {
+            if (Test-ReparsePoint -Path $to) {
+              $target = Get-LinkTargetPath -Path $to
+              if ($target -eq $from) {
+                Write-LogLine -Tag "skip" -Message "correct link already exists." -Color Green -Indent 4
+                $needsCreate = $false
+              } else {
+                Write-LogLine -Tag "replace" -Message ("link points elsewhere ({0}), replacing." -f $target) -Color Yellow -Indent 4
+                if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
+                  continue
+                }
+              }
+            } else {
+              Write-LogLine -Tag "replace" -Message "exists but is not a link, replacing." -Color Yellow -Indent 4
+              if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
 
     try {
+      Write-ItemHeader -Mode $mode -From $from -To $to
+          }
+          elseif ($mode -eq "hardlink") {
+            if (Test-ReparsePoint -Path $to) {
+              Write-LogLine -Tag "replace" -Message "is a reparse link, replacing with hardlink." -Color Yellow -Indent 4
+              if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
+                continue
+              }
+          Invoke-RobocopySafe -Source $from -Destination $to -Arguments @("/E","/R:1","/W:1","/NFL","/NDL")
+              if (Test-HardlinkMatchesSource -Destination $to -Source $from) {
+                Write-LogLine -Tag "skip" -Message "correct hardlink already exists." -Color Green -Indent 4
+                $needsCreate = $false
+              } else {
+                Write-LogLine -Tag "replace" -Message "hardlink target mismatch, replacing." -Color Yellow -Indent 4
+                if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
+                  continue
+                }
+              }
+            }
+          } elseif ($mode -eq "shortcut") {
+            $target = Get-ShortcutTarget -Path $to
+            $targetResolved = if ($null -ne $target) { Resolve-DotmngrPath -Path ([string]$target) } else { $null }
+            if ($null -ne $targetResolved -and $targetResolved -eq $from) {
+              Write-LogLine -Tag "skip" -Message "correct shortcut already exists." -Color Green -Indent 4
+              $needsCreate = $false
+            } else {
+              Write-LogLine -Tag "replace" -Message ("shortcut points elsewhere ({0}), replacing." -f $targetResolved) -Color Yellow -Indent 4
+              if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
+          Copy-Item -LiteralPath $from -Destination $to -Force
+          Write-LogLine -Tag "create" -Message "file copied once." -Color Green -Indent 4
+        }
+          } else {
+            throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
+        continue
+              if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
 
-    Write-ItemHeader -Mode $mode -From $from -To $to
-    New-ParentDirectoryIfMissing -Path $to
+        if (-not $needsCreate) {
+          Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+          continue
+        }
 
-    if ($Force -and (Test-Path -LiteralPath $to)) {
-      Write-LogLine -Tag "replace" -Message "removing destination before apply." -Color Yellow -Indent 4
-      if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
+        switch ($mode) {
+          "hardlink" {
+            if (Test-Path -LiteralPath $from -PathType Container) {
+              throw "hardlink mode only supports files: $from"
+            }
+            New-Item -ItemType HardLink -Path $to -Target $from | Out-Null
+            Write-LogLine -Tag "create" -Message "hardlink created." -Color Green -Indent 4
+            Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+          if (Test-ReparsePoint -Path $to) {
+          "symlink" {
+            New-Item -ItemType SymbolicLink -Path $to -Target $from | Out-Null
+            Write-LogLine -Tag "create" -Message "symlink created." -Color Green -Indent 4
+            Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+          }
+          "junction" {
+            New-Item -ItemType Junction -Path $to -Target $from | Out-Null
+            Write-LogLine -Tag "create" -Message "junction created." -Color Green -Indent 4
+            Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+          }
+          "shortcut" {
+            $scParams = @{ Path = $to; TargetPath = $from }
+            $scWorkDir  = $it | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
+            $scArgs     = $it | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
+            $scDesc     = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
+            $scIcon     = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
+            $scWinStyle = $it | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
+            if ($scWorkDir)            { $scParams.WorkingDirectory = [System.Environment]::ExpandEnvironmentVariables($scWorkDir) }
+            if ($scArgs)               { $scParams.Arguments        = [System.Environment]::ExpandEnvironmentVariables($scArgs) }
+            if ($scDesc)               { $scParams.Description      = $scDesc }
+            if ($scIcon)               { $scParams.IconLocation     = [System.Environment]::ExpandEnvironmentVariables($scIcon) }
+            if ($null -ne $scWinStyle) { $scParams.WindowStyle      = Resolve-WindowStyle $scWinStyle }
+            New-WindowsShortcut @scParams
+            Write-LogLine -Tag "create" -Message "shortcut created." -Color Green -Indent 4
+            Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+          }
+          default {
+            throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
+          }
+      if (-not $needsCreate) {
+      }
         continue
       }
-    }
 
-    if ($mode -eq "seed") {
-      if (Test-Path -LiteralPath $to) {
-        Write-LogLine -Tag "skip" -Message "destination exists, skipping (seed)." -Color Green -Indent 4
-        continue
-      }
-
-      if (Test-Path -LiteralPath $from -PathType Container) {
-        New-DirectoryIfMissing -Path $to
-        Invoke-RobocopySafe -Source $from -Destination $to -Arguments @("/E","/R:1","/W:1","/NFL","/NDL")
-        Write-LogLine -Tag "create" -Message "directory copied once." -Color Green -Indent 4
-      } else {
-        Copy-Item -LiteralPath $from -Destination $to -Force
-        Write-LogLine -Tag "create" -Message "file copied once." -Color Green -Indent 4
-      }
-      continue
-    }
-
-    # Link modes (tracked)
-    $needsCreate = $true
-
-    if (Test-Path -LiteralPath $to) {
-      if ($mode -eq "symlink" -or $mode -eq "junction") {
-        if (Test-ReparsePoint -Path $to) {
-          $target = Get-LinkTargetPath -Path $to
-          if ($target -eq $from) {
-            Write-LogLine -Tag "skip" -Message "correct link already exists." -Color Green -Indent 4
-            $needsCreate = $false
-          } else {
-            Write-LogLine -Tag "replace" -Message ("link points elsewhere ({0}), replacing." -f $target) -Color Yellow -Indent 4
-            if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-              continue
-            }
+      switch ($mode) {
+        "hardlink" {
+          if (Test-Path -LiteralPath $from -PathType Container) {
+            throw "hardlink mode only supports files: $from"
           }
-        } else {
-          Write-LogLine -Tag "replace" -Message "exists but is not a link, replacing." -Color Yellow -Indent 4
-          if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-            continue
-          }
+          New-Item -ItemType HardLink -Path $to -Target $from | Out-Null
+          Write-LogLine -Tag "create" -Message "hardlink created." -Color Green -Indent 4
+          Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+        }
+        "symlink" {
+          New-Item -ItemType SymbolicLink -Path $to -Target $from | Out-Null
+          Write-LogLine -Tag "create" -Message "symlink created." -Color Green -Indent 4
+          Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+        }
+        "junction" {
+          New-Item -ItemType Junction -Path $to -Target $from | Out-Null
+          Write-LogLine -Tag "create" -Message "junction created." -Color Green -Indent 4
+          Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+        }
+        "shortcut" {
+          $scParams = @{ Path = $to; TargetPath = $from }
+          $scWorkDir  = $it | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
+          $scArgs     = $it | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
+          $scDesc     = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
+          $scIcon     = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
+          $scWinStyle = $it | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
+          if ($scWorkDir)            { $scParams.WorkingDirectory = [System.Environment]::ExpandEnvironmentVariables($scWorkDir) }
+          if ($scArgs)               { $scParams.Arguments        = [System.Environment]::ExpandEnvironmentVariables($scArgs) }
+          if ($scDesc)               { $scParams.Description      = $scDesc }
+          if ($scIcon)               { $scParams.IconLocation     = [System.Environment]::ExpandEnvironmentVariables($scIcon) }
+          if ($null -ne $scWinStyle) { $scParams.WindowStyle      = Resolve-WindowStyle $scWinStyle }
+          New-WindowsShortcut @scParams
+          Write-LogLine -Tag "create" -Message "shortcut created." -Color Green -Indent 4
+          Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+        }
+        default {
+          throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
         }
       }
-      elseif ($mode -eq "hardlink") {
-        if (Test-ReparsePoint -Path $to) {
-          Write-LogLine -Tag "replace" -Message "is a reparse link, replacing with hardlink." -Color Yellow -Indent 4
-          if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-            continue
-          }
-        } else {
-          if (Test-HardlinkMatchesSource -Destination $to -Source $from) {
-            Write-LogLine -Tag "skip" -Message "correct hardlink already exists." -Color Green -Indent 4
-            $needsCreate = $false
-          } else {
-            Write-LogLine -Tag "replace" -Message "hardlink target mismatch, replacing." -Color Yellow -Indent 4
-            if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-              continue
-            }
-          }
-        }
-      } elseif ($mode -eq "shortcut") {
-        $target = Get-ShortcutTarget -Path $to
-        $targetResolved = if ($null -ne $target) { Resolve-DotmngrPath -Path ([string]$target) } else { $null }
-        if ($null -ne $targetResolved -and $targetResolved -eq $from) {
-          Write-LogLine -Tag "skip" -Message "correct shortcut already exists." -Color Green -Indent 4
-          $needsCreate = $false
-        } else {
-          Write-LogLine -Tag "replace" -Message ("shortcut points elsewhere ({0}), replacing." -f $targetResolved) -Color Yellow -Indent 4
-          if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
-            continue
-          }
-        }
-      } else {
-        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
-      }
-    }
-
-    if (-not $needsCreate) {
-      Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
-      continue
-    }
-
-    switch ($mode) {
-      "hardlink" {
-        if (Test-Path -LiteralPath $from -PathType Container) {
-          throw "hardlink mode only supports files: $from"
-        }
-        New-Item -ItemType HardLink -Path $to -Target $from | Out-Null
-        Write-LogLine -Tag "create" -Message "hardlink created." -Color Green -Indent 4
-        Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
-      }
-      "symlink" {
-        New-Item -ItemType SymbolicLink -Path $to -Target $from | Out-Null
-        Write-LogLine -Tag "create" -Message "symlink created." -Color Green -Indent 4
-        Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
-      }
-      "junction" {
-        New-Item -ItemType Junction -Path $to -Target $from | Out-Null
-        Write-LogLine -Tag "create" -Message "junction created." -Color Green -Indent 4
-        Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
-      }
-      "shortcut" {
-        $scParams = @{ Path = $to; TargetPath = $from }
-        $scWorkDir  = $it | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
-        $scArgs     = $it | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
-        $scDesc     = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
-        $scIcon     = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
-        $scWinStyle = $it | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
-        if ($scWorkDir)            { $scParams.WorkingDirectory = [System.Environment]::ExpandEnvironmentVariables($scWorkDir) }
-        if ($scArgs)               { $scParams.Arguments        = [System.Environment]::ExpandEnvironmentVariables($scArgs) }
-        if ($scDesc)               { $scParams.Description      = $scDesc }
-        if ($scIcon)               { $scParams.IconLocation     = [System.Environment]::ExpandEnvironmentVariables($scIcon) }
-        if ($null -ne $scWinStyle) { $scParams.WindowStyle      = Resolve-WindowStyle $scWinStyle }
-        New-WindowsShortcut @scParams
-        Write-LogLine -Tag "create" -Message "shortcut created." -Color Green -Indent 4
-        Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
-      }
-      default {
-        throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
-      }
-    }
     } catch {
       $errMsg = $_.Exception.Message
       Write-LogLine -Tag "error" -Message ("failed to process item (mode={0}): {1}" -f $mode, $errMsg) -Color Red -Indent 4
