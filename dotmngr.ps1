@@ -474,7 +474,7 @@ function Test-ShouldRemoveManagedLink {
 
   $modeValue = $StateEntry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
   $fromValue = $StateEntry | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
-  
+
   $mode = if ($modeValue) { ([string]$modeValue).ToLower() } else { "" }
   $from = if ($fromValue) { Resolve-DotmngrPath -Path ([string]$fromValue) } else { "" }
 
@@ -671,7 +671,7 @@ $state = [pscustomobject]@{
 if (Test-Path -LiteralPath $statePath) {
   try {
     $loaded = (Get-Content -LiteralPath $statePath -Raw) | ConvertFrom-Json
-    if ($loaded) { 
+    if ($loaded) {
       $loadedPackages = $loaded | Select-Object -ExpandProperty packages -ErrorAction SilentlyContinue
       if ($loadedPackages) {
         if ($loadedPackages -is [hashtable]) {
@@ -981,7 +981,7 @@ if ($Unlink) {
     $links = Get-StatePackageLinks -Name $pkg
 
     $toKeys = Get-StateLinkEntries -LinksObject $links
-    
+
     foreach ($toKeyInfo in $toKeys) {
       $toKey = $toKeyInfo.Name
       $old = $toKeyInfo.Value
@@ -1084,13 +1084,13 @@ foreach ($pkg in $selectedPackages) {
 
     $itTo = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
     $itFrom = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
-    
+
     # Validate required properties
     if ([string]::IsNullOrWhiteSpace($itTo) -or [string]::IsNullOrWhiteSpace($itFrom)) {
       Write-LogLine -Tag "warn" -Message "item missing 'to' or 'from' property, skipping" -Color Yellow -Indent 2
       continue
     }
-    
+
     $toExpanded = Resolve-DotmngrPath -Path ([string]$itTo)
     $fromExpanded = [System.Environment]::ExpandEnvironmentVariables([string]$itFrom)
 
