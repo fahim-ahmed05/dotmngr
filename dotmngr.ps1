@@ -829,6 +829,30 @@ function Test-ReplaceDestinationRemoval {
   return $true
 }
 
+function Set-TrackedLinkState {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]
+    $LinksObject,
+
+    [Parameter(Mandatory=$true)]
+    [string]$DestinationPath,
+
+    [Parameter(Mandatory=$true)]
+    [string]$SourcePath,
+
+    [Parameter(Mandatory=$true)]
+    [string]$Mode
+  )
+
+  $LinksObject | Add-Member -MemberType NoteProperty -Name $DestinationPath -Value ([pscustomobject]@{
+    to = $DestinationPath
+    from = $SourcePath
+    mode = $Mode
+    updated = (Get-Date).ToString("o")
+  }) -Force
+}
+
 # Build package map
 $packagesMap = @{}
 foreach ($p in $config.packages.PSObject.Properties) {
@@ -1232,7 +1256,7 @@ foreach ($pkg in $selectedPackages) {
     }
 
     if (-not $needsCreate) {
-      $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
+      Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
       continue
     }
 
@@ -1243,17 +1267,17 @@ foreach ($pkg in $selectedPackages) {
         }
         New-Item -ItemType HardLink -Path $to -Target $from | Out-Null
         Write-LogLine -Tag "create" -Message "hardlink created." -Color Green -Indent 4
-        $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
+        Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
       }
       "symlink" {
         New-Item -ItemType SymbolicLink -Path $to -Target $from | Out-Null
         Write-LogLine -Tag "create" -Message "symlink created." -Color Green -Indent 4
-        $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
+        Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
       }
       "junction" {
         New-Item -ItemType Junction -Path $to -Target $from | Out-Null
         Write-LogLine -Tag "create" -Message "junction created." -Color Green -Indent 4
-        $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
+        Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
       }
       "shortcut" {
         $scParams = @{ Path = $to; TargetPath = $from }
@@ -1269,7 +1293,7 @@ foreach ($pkg in $selectedPackages) {
         if ($null -ne $scWinStyle) { $scParams.WindowStyle      = Resolve-WindowStyle $scWinStyle }
         New-WindowsShortcut @scParams
         Write-LogLine -Tag "create" -Message "shortcut created." -Color Green -Indent 4
-        $links | Add-Member -MemberType NoteProperty -Name $toKey -Value ([pscustomobject]@{ to=$to; from=$from; mode=$mode; updated=(Get-Date).ToString("o") }) -Force
+        Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
       }
       default {
         throw "Unknown mode '$mode' (supported: hardlink, symlink, junction, seed, shortcut)"
