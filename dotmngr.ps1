@@ -231,24 +231,25 @@ function Move-ItemToTrashFolder {
   New-DirectoryIfMissing -Path $TrashDir
 
   $name  = Split-Path -Leaf $Path
-  $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $stamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+  $token = [System.Guid]::NewGuid().ToString("N").Substring(0, 8)
 
   if (Test-Path -LiteralPath $Path -PathType Container) {
-    $destName = "$name.$stamp"
+    $destName = "{0}.{1}-{2}" -f $name, $stamp, $token
   } else {
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($name)
     $extension = [System.IO.Path]::GetExtension($name)
     if ([string]::IsNullOrEmpty($extension)) {
-      $destName = "$name.$stamp"
+      $destName = "{0}.{1}-{2}" -f $name, $stamp, $token
     } else {
-      $destName = "{0}_{1}{2}" -f $baseName, $stamp, $extension
+      $destName = "{0}_{1}-{2}{3}" -f $baseName, $stamp, $token, $extension
     }
   }
 
   $dest  = Join-Path $TrashDir $destName
 
   try {
-    Move-Item -LiteralPath $Path -Destination $dest -Force
+    Move-Item -LiteralPath $Path -Destination $dest
     return $dest
   } catch {
     Write-LogLine -Tag "warn" -Message ("could not move to trash: {0}" -f $_.Exception.Message) -Color Yellow -Indent 4
@@ -355,6 +356,12 @@ function Move-DestinationToSourceIfMissing {
     [Parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
     [string]$Mode
+
+    [Parameter()]
+    [bool]$UseTrash = $false,
+
+    [Parameter()]
+    [string]$TrashDir = ""
   )
 
   if (Test-Path -LiteralPath $SourcePath) { return $true }
@@ -372,8 +379,29 @@ function Move-DestinationToSourceIfMissing {
   }
 
   New-ParentDirectoryIfMissing -Path $SourcePath
-  Move-Item -LiteralPath $DestinationPath -Destination $SourcePath -Force
-  Write-LogLine -Tag "recover" -Message ("source missing; moved destination to source: {0}" -f $SourcePath) -Color Yellow -Indent 4
+  try {
+    if (Test-Path -LiteralPath $DestinationPath -PathType Container) {
+      Copy-Item -LiteralPath $DestinationPath -Destination $SourcePath -Recurse -Force
+    } else {
+      Copy-Item -LiteralPath $DestinationPath -Destination $SourcePath -Force
+    }
+  } catch {
+    Write-LogLine -Tag "warn" -Message ("source recovery copy failed, leaving destination untouched: {0}" -f $_.Exception.Message) -Color Yellow -Indent 4
+    return $false
+  }
+
+  if (!(Test-Path -LiteralPath $SourcePath)) {
+    Write-LogLine -Tag "warn" -Message "source recovery copy did not produce source path, leaving destination untouched." -Color Yellow -Indent 4
+    return $false
+  }
+
+  Write-LogLine -Tag "recover" -Message ("source missing; copied destination to source: {0}" -f $SourcePath) -Color Yellow -Indent 4
+
+  $archived = Remove-ManagedDestination -Path $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir
+  if (-not $archived -and (Test-Path -LiteralPath $DestinationPath)) {
+    Write-LogLine -Tag "warn" -Message "original destination could not be archived after copy; leaving it in place." -Color Yellow -Indent 4
+  }
+
   return $true
 }
 
@@ -983,7 +1011,7 @@ foreach ($pkg in $selectedPackages) {
 
       $isRecoverableLinkMode = ($mode -eq "symlink" -or $mode -eq "junction" -or $mode -eq "hardlink")
       if ($isRecoverableLinkMode) {
-        $recovered = Move-DestinationToSourceIfMissing -SourcePath $fromExpanded -DestinationPath $toExpanded -Mode $mode
+        $recovered = Move-DestinationToSourceIfMissing -SourcePath $fromExpanded -DestinationPath $toExpanded -Mode $mode -UseTrash $useTrash -TrashDir $trashDir
         if ($recovered) {
           try {
             $fromResolved = (Resolve-Path -LiteralPath $fromExpanded).Path
