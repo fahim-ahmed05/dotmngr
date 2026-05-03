@@ -1,6 +1,6 @@
 # Dot Manager
 
-A simple PowerShell script that manages dotfiles scattered across your system using a JSON manifest. It can create links (symlink/junction/hardlink) or manage one-way file/directory transfers (`push` or `seed`). It also keeps a state file so removed/moved entries in your config don’t leave stale links behind.
+A simple PowerShell script that manages dotfiles scattered across your system using a JSON manifest. It can create links (symlink/junction/hardlink), sync folder/file pairs by comparing hashes and using modified time to choose the winning side (`sync`), or manage one-way file/directory seeding (`seed`). It also keeps a state file so removed/moved entries in your config don’t leave stale links behind.
 
 ## Features
 
@@ -9,7 +9,7 @@ A simple PowerShell script that manages dotfiles scattered across your system us
   * `symlink` (file/dir)
   * `junction` (dir)
   * `hardlink` (file)
-  * `push` (one-way push via `robocopy`, skip overwriting newer destination)
+  * `sync` (hash equality check, newer side wins, overwritten files go to trash)
   * `seed` (copy only if destination doesn’t exist)  
   * `shortcut` (Windows `.lnk` shortcut)
   
@@ -236,20 +236,24 @@ Creates a hardlink at `to` pointing to `from`.
 * Files only (cannot hardlink directories)
 * Source and destination must be on the same drive/volume
 
-### `push`
-
-Uses `robocopy` to push changes from `from → to`.
-
-* Uses timestamps + size
-* Uses `/XO` so it **won’t overwrite** destination if destination is newer
-* Good for “push updates but don’t clobber local edits”
-
 ### `seed`
 
 Copies `from → to` only if `to` does not already exist.
 
 * Once `to` exists, it is never changed again by dotmngr
 * Useful for “seed a default config” behavior
+
+### `sync`
+
+Synchronizes file and folder pairs by comparing hashes first, then using modified time to choose the winning side.
+
+* If hashes match, it skips the pair
+* If hashes differ, the newer side wins
+* For files, the losing file is moved to trash before overwrite
+* For folders, changed files are updated incrementally instead of recopying the entire tree
+* Uses PowerShell copy operations for the incremental folder sync, not `robocopy`
+* More reliable than timestamp-only comparison because hash equality avoids false positives
+* Avoid using it when both sides can be edited in parallel unless you are okay with last-write-wins behavior
 
 ### `shortcut`
 
@@ -302,7 +306,7 @@ For link modes (`symlink`, `junction`, `hardlink`, `shortcut`):
 
 For transfer modes:
 
-* `push` updates `to` from `from` via `robocopy`
+* `sync` compares hashes, picks the newer side, and updates only the changed files; overwritten files go to trash
 * `seed` does nothing if `to` exists
 
 
@@ -335,7 +339,7 @@ Enable Developer Mode or run PowerShell as Administrator.
 
 ### Hardlink fails
 
-Hardlinks only work for files on the same drive. If your dotfiles repo is on `D:` and `to` is on `C:`, use `symlink` or `push` instead.
+Hardlinks only work for files on the same drive. If your dotfiles repo is on `D:` and `to` is on `C:`, use `symlink` or `sync` instead.
 
 ### Robocopy returns weird exit codes
 

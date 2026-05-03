@@ -27,6 +27,7 @@ Modes:
   junction  - Junction (dir)
   hardlink  - Hard link (file, same volume)
   seed      - Copy only if destination doesn’t exist (file/dir)
+  sync      - Copy newer side to older side by modified time (file/dir)
   shortcut  - Windows .lnk shortcut (file/dir)
 Switches:
   -Unlink   Remove all managed links for the selected packages
@@ -37,11 +38,11 @@ Switches:
 
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory = $true)]
   [ValidateNotNullOrEmpty()]
   [string]$ConfigPath,
 
-  [Parameter(ValueFromRemainingArguments=$true)]
+  [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$Package,
 
   [Parameter()]
@@ -65,7 +66,7 @@ $ErrorActionPreference = "Stop"
 function Resolve-DotmngrPath {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path
   )
@@ -76,7 +77,8 @@ function Resolve-DotmngrPath {
   # Resolve if exists; otherwise return expanded.
   try {
     return (Resolve-Path -LiteralPath $expanded).Path
-  } catch {
+  }
+  catch {
     return $expanded
   }
 }
@@ -84,7 +86,7 @@ function Resolve-DotmngrPath {
 function New-DirectoryIfMissing {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path
   )
@@ -97,7 +99,7 @@ function New-DirectoryIfMissing {
 function New-ParentDirectoryIfMissing {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path
   )
@@ -109,7 +111,7 @@ function New-ParentDirectoryIfMissing {
 function Test-ReparsePoint {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path
   )
@@ -122,16 +124,17 @@ function Test-ReparsePoint {
 function Get-ShortcutTarget {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path
   )
 
   try {
     $wsh = New-Object -ComObject WScript.Shell
-    $sc  = $wsh.CreateShortcut($Path)
+    $sc = $wsh.CreateShortcut($Path)
     return $sc.TargetPath
-  } catch {
+  }
+  catch {
     return $null
   }
 }
@@ -141,7 +144,7 @@ function Resolve-WindowStyle {
   # raw integer (as string or int) and returns the corresponding Win32 nShowCmd int.
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     $Value
   )
 
@@ -163,11 +166,11 @@ function Resolve-WindowStyle {
 function New-WindowsShortcut {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$TargetPath,
 
@@ -188,20 +191,20 @@ function New-WindowsShortcut {
   )
 
   $wsh = New-Object -ComObject WScript.Shell
-  $sc  = $wsh.CreateShortcut($Path)
-  $sc.TargetPath  = $TargetPath
+  $sc = $wsh.CreateShortcut($Path)
+  $sc.TargetPath = $TargetPath
   $sc.WindowStyle = $WindowStyle
   if ($WorkingDirectory) { $sc.WorkingDirectory = $WorkingDirectory }
-  if ($Arguments)        { $sc.Arguments        = $Arguments }
-  if ($Description)      { $sc.Description      = $Description }
-  if ($IconLocation)     { $sc.IconLocation     = $IconLocation }
+  if ($Arguments) { $sc.Arguments = $Arguments }
+  if ($Description) { $sc.Description = $Description }
+  if ($IconLocation) { $sc.IconLocation = $IconLocation }
   $sc.Save()
 }
 
 function Get-LinkTargetPath {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path
   )
@@ -220,42 +223,306 @@ function Get-LinkTargetPath {
   return (Resolve-DotmngrPath -Path ([string]$t))
 }
 
-function Move-ItemToTrashFolder {
+function Get-PathHashUtc {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Path
+  )
+
+  if (!(Test-Path -LiteralPath $Path)) { return $null }
+
+  $item = Get-Item -LiteralPath $Path -Force
+
+  if ($item.PSIsContainer) {
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    $hashString = @()
+    $rootResolved = (Resolve-DotmngrPath -Path $Path).TrimEnd("\")
+
+    $hashString += "D|."
+
+    Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue |
+    Sort-Object -Property FullName |
+    ForEach-Object {
+      $relativePath = $_.FullName.Substring($rootResolved.Length).TrimStart("\")
+      if (-not $_.PSIsContainer) {
+        $fileHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+        $hashString += "F|$relativePath|$fileHash"
+      }
+      else {
+        $hashString += "D|$relativePath"
+      }
+    }
+
+    $combined = $hashString -join "`n"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($combined)
+    $hashBytes = $hasher.ComputeHash($bytes)
+    $hashHex = ($hashBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+    return $hashHex
+  }
+  else {
+    $hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+    return $hash
+  }
+}
+
+function Get-PathNewestWriteTimeUtc {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Path
+  )
+
+  if (!(Test-Path -LiteralPath $Path)) { return $null }
+
+  $item = Get-Item -LiteralPath $Path -Force
+  $newest = $item.LastWriteTimeUtc
+
+  if ($item.PSIsContainer) {
+    foreach ($child in Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue) {
+      if ($child.LastWriteTimeUtc -gt $newest) {
+        $newest = $child.LastWriteTimeUtc
+      }
+    }
+  }
+
+  return $newest
+}
+
+function Get-RelativePathFromRoot {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$RootPath,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ChildPath
+  )
+
+  $rootResolved = (Resolve-DotmngrPath -Path $RootPath).TrimEnd("\")
+  $childResolved = Resolve-DotmngrPath -Path $ChildPath
+
+  if ($childResolved.Length -le $rootResolved.Length) { return "" }
+
+  $prefix = $rootResolved + "\"
+  if ($childResolved.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $childResolved.Substring($prefix.Length)
+  }
+
+  return $childResolved
+}
+
+function Get-PathTreeEntries {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$RootPath
+  )
+
+  $entries = @()
+  if (!(Test-Path -LiteralPath $RootPath)) { return $entries }
+
+  $entries += [pscustomobject]@{
+    RelativePath     = "."
+    FullPath         = (Resolve-DotmngrPath -Path $RootPath)
+    IsContainer      = $true
+    Hash             = $null
+    LastWriteTimeUtc = (Get-Item -LiteralPath $RootPath -Force).LastWriteTimeUtc
+  }
+
+  Get-ChildItem -LiteralPath $RootPath -Force -Recurse -ErrorAction SilentlyContinue |
+  Sort-Object -Property FullName |
+  ForEach-Object {
+    $relativePath = Get-RelativePathFromRoot -RootPath $RootPath -ChildPath $_.FullName
+    if ($_.PSIsContainer) {
+      $entries += [pscustomobject]@{
+        RelativePath     = $relativePath
+        FullPath         = $_.FullName
+        IsContainer      = $true
+        Hash             = $null
+        LastWriteTimeUtc = $_.LastWriteTimeUtc
+      }
+    }
+    else {
+      $entries += [pscustomobject]@{
+        RelativePath     = $relativePath
+        FullPath         = $_.FullName
+        IsContainer      = $false
+        Hash             = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+        LastWriteTimeUtc = $_.LastWriteTimeUtc
+      }
+    }
+  }
+
+  return $entries
+}
+
+function Remove-PathBeforeCopy {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
+    [bool]$UseTrash,
+
+    [Parameter()]
+    [string]$TrashDir = ""
+  )
+
+  if (!(Test-Path -LiteralPath $Path)) { return $true }
+
+  if (Test-ReparsePoint -Path $Path) {
+    try {
+      if (Test-Path -LiteralPath $Path -PathType Container) {
+        cmd /c "rmdir `"$Path`"" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          throw "rmdir failed with exit code $LASTEXITCODE"
+        }
+      }
+      else {
+        Remove-Item -LiteralPath $Path -Force
+      }
+
+      Write-Host "    removed link/junction only." -ForegroundColor Yellow
+      return $true
+    }
+    catch {
+      Write-LogLine -Tag "error" -Message ("failed to remove reparse point safely: {0}" -f $_.Exception.Message) -Color Red -Indent 4
+      return $false
+    }
+  }
+
+  if ($UseTrash -and -not [string]::IsNullOrWhiteSpace($TrashDir)) {
+    $moved = Move-ItemToTrashFolder -Path $Path -TrashDir $TrashDir
+    if ($moved) {
+      Write-LogLine -Tag "backup" -Message "moved to trash: $moved" -Color Yellow -Indent 4
+      return $true
+    }
+
+    Write-LogLine -Tag "error" -Message "could not move path to trash before overwrite, skipping." -Color Red -Indent 4
+    return $false
+  }
+
+  if (Move-ItemToRecycleBin -Path $Path) {
+    Write-Host "    moved to recycle bin." -ForegroundColor Yellow
+    return $true
+  }
+
+  Write-LogLine -Tag "error" -Message "could not remove path before overwrite, skipping." -Color Red -Indent 4
+  return $false
+}
+
+function Invoke-SyncTreeIncremental {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$SourceRoot,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$DestinationRoot,
+
+    [Parameter(Mandatory = $true)]
+    [bool]$UseTrash,
+
+    [Parameter()]
+    [string]$TrashDir = ""
+  )
+
+  $sourceEntries = Get-PathTreeEntries -RootPath $SourceRoot
+  $destinationRootExists = Test-Path -LiteralPath $DestinationRoot
+
+  foreach ($entry in $sourceEntries | Where-Object { $_.IsContainer -and $_.RelativePath -ne "." }) {
+    $targetDir = Join-Path $DestinationRoot $entry.RelativePath
+    if (Test-Path -LiteralPath $targetDir -PathType Leaf) {
+      if (-not (Remove-PathBeforeCopy -Path $targetDir -UseTrash $UseTrash -TrashDir $TrashDir)) {
+        return $false
+      }
+    }
+
+    New-DirectoryIfMissing -Path $targetDir
+  }
+
+  foreach ($entry in $sourceEntries | Where-Object { -not $_.IsContainer }) {
+    $targetPath = Join-Path $DestinationRoot $entry.RelativePath
+    $targetExists = Test-Path -LiteralPath $targetPath
+
+    if ($targetExists -and (Test-Path -LiteralPath $targetPath -PathType Container)) {
+      if (-not (Remove-PathBeforeCopy -Path $targetPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+        return $false
+      }
+      $targetExists = $false
+    }
+
+    if ($targetExists) {
+      $targetHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+      if ($targetHash -eq $entry.Hash) {
+        continue
+      }
+
+      if (-not (Remove-PathBeforeCopy -Path $targetPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+        return $false
+      }
+    }
+
+    New-ParentDirectoryIfMissing -Path $targetPath
+    Copy-Item -LiteralPath $entry.FullPath -Destination $targetPath -Force
+  }
+
+  if (-not $destinationRootExists) {
+    New-DirectoryIfMissing -Path $DestinationRoot
+  }
+
+  return $true
+}
+
+function Move-ItemToTrashFolder {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Path,
+
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$TrashDir
   )
 
   New-DirectoryIfMissing -Path $TrashDir
 
-  $name  = Split-Path -Leaf $Path
+  $name = Split-Path -Leaf $Path
   $stamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
   $token = [System.Guid]::NewGuid().ToString("N").Substring(0, 8)
 
   if (Test-Path -LiteralPath $Path -PathType Container) {
     $destName = "{0}.{1}-{2}" -f $name, $stamp, $token
-  } else {
+  }
+  else {
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($name)
     $extension = [System.IO.Path]::GetExtension($name)
     if ([string]::IsNullOrEmpty($extension)) {
       $destName = "{0}.{1}-{2}" -f $name, $stamp, $token
-    } else {
+    }
+    else {
       $destName = "{0}_{1}-{2}{3}" -f $baseName, $stamp, $token, $extension
     }
   }
 
-  $dest  = Join-Path $TrashDir $destName
+  $dest = Join-Path $TrashDir $destName
 
   try {
     Move-Item -LiteralPath $Path -Destination $dest
     return $dest
-  } catch {
+  }
+  catch {
     Write-LogLine -Tag "warn" -Message ("could not move to trash: {0}" -f $_.Exception.Message) -Color Yellow -Indent 4
     return $null
   }
@@ -264,7 +531,7 @@ function Move-ItemToTrashFolder {
 function Move-ItemToRecycleBin {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path
   )
@@ -279,7 +546,8 @@ function Move-ItemToRecycleBin {
         [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin,
         [Microsoft.VisualBasic.FileIO.UICancelOption]::ThrowException
       )
-    } else {
+    }
+    else {
       [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
         $Path,
         [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
@@ -289,7 +557,8 @@ function Move-ItemToRecycleBin {
     }
 
     return $true
-  } catch {
+  }
+  catch {
     Write-LogLine -Tag "error" -Message ("could not send to recycle bin: {0}" -f $_.Exception.Message) -Color Red -Indent 4
     return $false
   }
@@ -298,11 +567,11 @@ function Move-ItemToRecycleBin {
 function Remove-ManagedDestination {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Path,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [bool]$UseTrash,
 
     [Parameter()]
@@ -329,7 +598,8 @@ function Remove-ManagedDestination {
         Remove-Item -LiteralPath $Path -Force
         Write-Host "    removed hardlink only." -ForegroundColor Yellow
         return $true
-      } catch {
+      }
+      catch {
         Write-LogLine -Tag "error" -Message ("failed to remove hardlink safely: {0}" -f $_.Exception.Message) -Color Red -Indent 4
         return $false
       }
@@ -343,13 +613,15 @@ function Remove-ManagedDestination {
         if ($LASTEXITCODE -ne 0) {
           throw "rmdir failed with exit code $LASTEXITCODE"
         }
-      } else {
+      }
+      else {
         Remove-Item -LiteralPath $Path -Force
       }
 
       Write-Host "    removed link/junction only." -ForegroundColor Yellow
       return $true
-    } catch {
+    }
+    catch {
       Write-LogLine -Tag "error" -Message ("failed to remove reparse point safely: {0}" -f $_.Exception.Message) -Color Red -Indent 4
       return $false
     }
@@ -374,15 +646,15 @@ function Remove-ManagedDestination {
 function Move-DestinationToSourceIfMissing {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$SourcePath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$DestinationPath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Mode,
 
@@ -411,11 +683,13 @@ function Move-DestinationToSourceIfMissing {
   try {
     if (Test-Path -LiteralPath $DestinationPath -PathType Container) {
       New-DirectoryIfMissing -Path $SourcePath
-      Invoke-RobocopySafe -Source $DestinationPath -Destination $SourcePath -Arguments @("/E","/R:1","/W:1","/NFL","/NDL")
-    } else {
+      Invoke-RobocopySafe -Source $DestinationPath -Destination $SourcePath -Arguments @("/E", "/R:1", "/W:1", "/NFL", "/NDL")
+    }
+    else {
       Copy-Item -LiteralPath $DestinationPath -Destination $SourcePath -Force
     }
-  } catch {
+  }
+  catch {
     Write-LogLine -Tag "warn" -Message ("source recovery copy failed, leaving destination untouched: {0}" -f $_.Exception.Message) -Color Yellow -Indent 4
     return $false
   }
@@ -438,11 +712,11 @@ function Move-DestinationToSourceIfMissing {
 function Test-HardlinkMatchesSource {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Destination,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Source
   )
@@ -457,7 +731,8 @@ function Test-HardlinkMatchesSource {
       if ($p -eq $Source) { return $true }
     }
     return $false
-  } catch {
+  }
+  catch {
     return $false
   }
 }
@@ -465,11 +740,11 @@ function Test-HardlinkMatchesSource {
 function Test-ShouldRemoveManagedLink {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Destination,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [pscustomobject]$StateEntry
   )
 
@@ -500,6 +775,10 @@ function Test-ShouldRemoveManagedLink {
     return ($targetResolved -eq $from)
   }
 
+  if ($mode -eq "sync") {
+    return $false
+  }
+
   # We do not auto-remove seed destinations.
   return $false
 }
@@ -507,7 +786,7 @@ function Test-ShouldRemoveManagedLink {
 function Get-TrackedItemStatus {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Destination,
 
     [Parameter()]
@@ -546,6 +825,17 @@ function Get-TrackedItemStatus {
       if ($targetResolved -eq $Source) { return "OK" }
       return "DRIFTED"
     }
+    "sync" {
+      $sourceIsContainer = Test-Path -LiteralPath $Source -PathType Container
+      $destinationIsContainer = Test-Path -LiteralPath $Destination -PathType Container
+      if ($sourceIsContainer -ne $destinationIsContainer) { return "DRIFTED" }
+
+      $sourceHash = Get-PathHashUtc -Path $Source
+      $destinationHash = Get-PathHashUtc -Path $Destination
+      if ($null -eq $sourceHash -or $null -eq $destinationHash) { return "DRIFTED" }
+      if ($sourceHash -eq $destinationHash) { return "OK" }
+      return "DRIFTED"
+    }
     default {
       # For seed and unknown modes, existence is the best available signal.
       return "OK"
@@ -556,15 +846,15 @@ function Get-TrackedItemStatus {
 function Invoke-RobocopySafe {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Source,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Destination,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string[]]$Arguments
   )
 
@@ -576,10 +866,10 @@ function Invoke-RobocopySafe {
 function Write-LogLine {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Tag,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Message,
 
     [Parameter()]
@@ -596,7 +886,7 @@ function Write-LogLine {
 function Write-PackageHeader {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$PackageName
   )
 
@@ -607,13 +897,13 @@ function Write-PackageHeader {
 function Write-ItemHeader {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Mode,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$From,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$To
   )
 
@@ -625,7 +915,7 @@ function Write-ItemHeader {
 # ---------------- Load config ----------------
 
 $config = (Get-Content -LiteralPath $ConfigPath -Raw) | ConvertFrom-Json
-if (-not $config.global)   { throw "Config must contain 'global'." }
+if (-not $config.global) { throw "Config must contain 'global'." }
 if (-not $config.packages) { throw "Config must contain 'packages'." }
 
 # Safely access mode property with diagnostics
@@ -634,20 +924,23 @@ if ($null -eq $modeProperty) {
   Write-Host "WARN: global.mode not found or empty. Available properties in global:" -ForegroundColor Yellow
   $config.global | Get-Member -MemberType NoteProperty | ForEach-Object { Write-Host "  - $($_.Name)" }
   $globalMode = "symlink"
-} else {
+}
+else {
   $globalMode = ([string]$modeProperty).ToLower()
 }
 
-$globalTrash   = [bool]($config.global | Select-Object -ExpandProperty trash -ErrorAction SilentlyContinue)
+$globalTrash = [bool]($config.global | Select-Object -ExpandProperty trash -ErrorAction SilentlyContinue)
 $globalTrashDirVal = $config.global | Select-Object -ExpandProperty trashDir -ErrorAction SilentlyContinue
 
 if ($globalTrash) {
   if ([string]::IsNullOrWhiteSpace([string]$globalTrashDirVal)) {
     $globalTrashDir = Resolve-DotmngrPath -Path "%USERPROFILE%\Trash\dotmngr"
-  } else {
+  }
+  else {
     $globalTrashDir = Resolve-DotmngrPath -Path ([string]$globalTrashDirVal)
   }
-} else {
+}
+else {
   $globalTrashDir = ""
 }
 
@@ -664,7 +957,7 @@ New-DirectoryIfMissing -Path $stateDir
 
 $configFull = (Resolve-Path -LiteralPath $ConfigPath).Path
 $configBase = [System.IO.Path]::GetFileNameWithoutExtension($configFull)
-$statePath  = Join-Path $stateDir ("state.{0}.json" -f $configBase)
+$statePath = Join-Path $stateDir ("state.{0}.json" -f $configBase)
 
 $state = [pscustomobject]@{
   updated  = $null
@@ -680,12 +973,14 @@ if (Test-Path -LiteralPath $statePath) {
       if ($loadedPackages) {
         if ($loadedPackages -is [hashtable]) {
           $state.packages = [pscustomobject]$loadedPackages
-        } else {
+        }
+        else {
           $state.packages = $loadedPackages
         }
       }
     }
-  } catch {
+  }
+  catch {
     Write-LogLine -Tag "warn" -Message ("couldn't parse state file, starting fresh: {0}" -f $statePath) -Color Yellow
   }
 }
@@ -693,7 +988,7 @@ if (Test-Path -LiteralPath $statePath) {
 function Get-StatePackage {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Name
   )
@@ -703,9 +998,9 @@ function Get-StatePackage {
   $pkgProp = $state.packages.PSObject.Properties[$Name]
   if ($null -eq $pkgProp) {
     $state.packages | Add-Member -MemberType NoteProperty -Name $Name -Value ([pscustomobject]@{
-      updated = $null
-      links   = [PSCustomObject]@{}
-    })
+        updated = $null
+        links   = [PSCustomObject]@{}
+      })
     $pkgProp = $state.packages.PSObject.Properties[$Name]
   }
 
@@ -720,7 +1015,7 @@ function Get-StatePackage {
 function Get-StatePackageLinks {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Name
   )
@@ -732,7 +1027,7 @@ function Get-StatePackageLinks {
 function Get-StateLinkEntries {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     $LinksObject
   )
 
@@ -747,10 +1042,10 @@ function Get-StateLinkEntries {
 function Invoke-TrackedEntryCleanup {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [pscustomobject]$StateEntry,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [bool]$UseTrash,
 
     [Parameter()]
@@ -768,8 +1063,15 @@ function Invoke-TrackedEntryCleanup {
 
   if ($PathOutputStyle -eq "bullet") {
     Write-Host ("  - {0}" -f $oldTo) -ForegroundColor White
-  } else {
+  }
+  else {
     Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
+  }
+
+  $entryMode = ([string]($StateEntry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)).ToLower()
+  if ($entryMode -eq "sync") {
+    Write-LogLine -Tag "untrack" -Message "copy mode; leaving paths untouched." -Color Cyan -Indent 4
+    return $true
   }
 
   if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $StateEntry) {
@@ -780,7 +1082,8 @@ function Invoke-TrackedEntryCleanup {
       Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
       return $false
     }
-  } else {
+  }
+  else {
     Write-LogLine -Tag "warn" -Message "not removing (destination no longer matches managed link)." -Color Yellow -Indent 4
   }
 
@@ -790,17 +1093,18 @@ function Invoke-TrackedEntryCleanup {
 function Remove-StatePackageIfEmpty {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$PackageName,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     $LinksObject
   )
 
   $linkCount = @($LinksObject.PSObject.Properties).Count
   if ($linkCount -eq 0) {
     $state.packages.PSObject.Properties.Remove($PackageName)
-  } else {
+  }
+  else {
     Write-LogLine -Tag "warn" -Message ("state retained for package '{0}' because some items could not be removed." -f $PackageName) -Color Yellow -Indent 2
   }
 }
@@ -808,16 +1112,16 @@ function Remove-StatePackageIfEmpty {
 function Invoke-PackageCleanupFromState {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$PackageName,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Tag,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Reason,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [bool]$UseTrash,
 
     [Parameter()]
@@ -848,17 +1152,17 @@ function Invoke-PackageCleanupFromState {
 function Test-ReplaceDestinationRemoval {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$DestinationPath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$ManagedMode,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$ManagedSource,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [bool]$UseTrash,
 
     [Parameter()]
@@ -877,37 +1181,37 @@ function Test-ReplaceDestinationRemoval {
 function Set-TrackedLinkState {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     $LinksObject,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$DestinationPath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$SourcePath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Mode
   )
 
   $LinksObject | Add-Member -MemberType NoteProperty -Name $DestinationPath -Value ([pscustomobject]@{
-    to = $DestinationPath
-    from = $SourcePath
-    mode = $Mode
-    updated = (Get-Date).ToString("o")
-  }) -Force
+      to      = $DestinationPath
+      from    = $SourcePath
+      mode    = $Mode
+      updated = (Get-Date).ToString("o")
+    }) -Force
 }
 
 function Invoke-SeedApplyIfNeeded {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Mode,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$SourcePath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$DestinationPath
   )
 
@@ -920,9 +1224,10 @@ function Invoke-SeedApplyIfNeeded {
 
   if (Test-Path -LiteralPath $SourcePath -PathType Container) {
     New-DirectoryIfMissing -Path $DestinationPath
-    Invoke-RobocopySafe -Source $SourcePath -Destination $DestinationPath -Arguments @("/E","/R:1","/W:1","/NFL","/NDL")
+    Invoke-RobocopySafe -Source $SourcePath -Destination $DestinationPath -Arguments @("/E", "/R:1", "/W:1", "/NFL", "/NDL")
     Write-LogLine -Tag "create" -Message "directory copied once." -Color Green -Indent 4
-  } else {
+  }
+  else {
     Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
     Write-LogLine -Tag "create" -Message "file copied once." -Color Green -Indent 4
   }
@@ -930,19 +1235,179 @@ function Invoke-SeedApplyIfNeeded {
   return $true
 }
 
+function Copy-PathByHash {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$SourcePath,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$DestinationPath,
+
+    [Parameter(Mandatory = $true)]
+    [bool]$UseTrash,
+
+    [Parameter()]
+    [string]$TrashDir = ""
+  )
+
+  $sourceIsContainer = Test-Path -LiteralPath $SourcePath -PathType Container
+  $destinationExists = Test-Path -LiteralPath $DestinationPath
+
+  if ($sourceIsContainer) {
+    if ($destinationExists -and -not (Test-Path -LiteralPath $DestinationPath -PathType Container)) {
+      throw "destination exists as a file, cannot overwrite with a directory: $DestinationPath"
+    }
+
+    if ($destinationExists) {
+      if ($UseTrash -and -not [string]::IsNullOrWhiteSpace($TrashDir)) {
+        $moved = Move-ItemToTrashFolder -Path $DestinationPath -TrashDir $TrashDir
+        if ($moved) {
+          Write-LogLine -Tag "backup" -Message "moved to trash: $moved" -Color Yellow -Indent 4
+        }
+        else {
+          Write-LogLine -Tag "error" -Message "could not move destination to trash before overwrite, skipping." -Color Red -Indent 4
+          return $false
+        }
+      }
+      elseif (Move-ItemToRecycleBin -Path $DestinationPath) {
+        Write-Host "    moved to recycle bin." -ForegroundColor Yellow
+      }
+      else {
+        Write-LogLine -Tag "error" -Message "could not remove destination before overwrite, skipping." -Color Red -Indent 4
+        return $false
+      }
+    }
+
+    New-DirectoryIfMissing -Path $DestinationPath
+    Invoke-RobocopySafe -Source $SourcePath -Destination $DestinationPath -Arguments @("/E", "/R:1", "/W:1", "/NFL", "/NDL")
+  }
+  else {
+    if ($destinationExists -and (Test-Path -LiteralPath $DestinationPath -PathType Container)) {
+      throw "destination exists as a directory, cannot overwrite with a file: $DestinationPath"
+    }
+
+    if ($destinationExists) {
+      if ($UseTrash -and -not [string]::IsNullOrWhiteSpace($TrashDir)) {
+        $moved = Move-ItemToTrashFolder -Path $DestinationPath -TrashDir $TrashDir
+        if ($moved) {
+          Write-LogLine -Tag "backup" -Message "moved to trash: $moved" -Color Yellow -Indent 4
+        }
+        else {
+          Write-LogLine -Tag "error" -Message "could not move destination to trash before overwrite, skipping." -Color Red -Indent 4
+          return $false
+        }
+      }
+      elseif (Move-ItemToRecycleBin -Path $DestinationPath) {
+        Write-Host "    moved to recycle bin." -ForegroundColor Yellow
+      }
+      else {
+        Write-LogLine -Tag "error" -Message "could not remove destination before overwrite, skipping." -Color Red -Indent 4
+        return $false
+      }
+    }
+
+    New-ParentDirectoryIfMissing -Path $DestinationPath
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+  }
+
+  return $true
+}
+
+function Invoke-SyncHashMode {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$SourcePath,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$DestinationPath,
+
+    [Parameter(Mandatory = $true)]
+    [bool]$UseTrash,
+
+    [Parameter()]
+    [string]$TrashDir = ""
+  )
+
+  $sourceExists = Test-Path -LiteralPath $SourcePath
+  $destinationExists = Test-Path -LiteralPath $DestinationPath
+
+  if (-not $sourceExists -and -not $destinationExists) {
+    Write-LogLine -Tag "warn" -Message "both sync paths are missing, skipping." -Color Yellow -Indent 4
+    return $false
+  }
+
+  if ($sourceExists -and -not $destinationExists) {
+    Write-LogLine -Tag "copy" -Message "destination missing, copying source to destination." -Color Green -Indent 4
+    return (Copy-PathByHash -SourcePath $SourcePath -DestinationPath $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir)
+  }
+
+  if (-not $sourceExists -and $destinationExists) {
+    Write-LogLine -Tag "copy" -Message "source missing, copying destination to source." -Color Green -Indent 4
+    return (Copy-PathByHash -SourcePath $DestinationPath -DestinationPath $SourcePath -UseTrash $UseTrash -TrashDir $TrashDir)
+  }
+
+  $sourceIsContainer = Test-Path -LiteralPath $SourcePath -PathType Container
+  $destinationIsContainer = Test-Path -LiteralPath $DestinationPath -PathType Container
+  if ($sourceIsContainer -ne $destinationIsContainer) {
+    Write-LogLine -Tag "warn" -Message "sync mode requires both paths to be the same kind (file or directory), skipping." -Color Yellow -Indent 4
+    return $false
+  }
+
+  $sourceHash = Get-PathHashUtc -Path $SourcePath
+  $destinationHash = Get-PathHashUtc -Path $DestinationPath
+  if ($null -eq $sourceHash -or $null -eq $destinationHash) {
+    Write-LogLine -Tag "warn" -Message "could not compute hashes for sync mode, skipping." -Color Yellow -Indent 4
+    return $false
+  }
+
+  if ($sourceHash -eq $destinationHash) {
+    Write-LogLine -Tag "skip" -Message "sync pair hashes match." -Color Green -Indent 4
+    return $true
+  }
+
+  $sourceTime = Get-PathNewestWriteTimeUtc -Path $SourcePath
+  $destinationTime = Get-PathNewestWriteTimeUtc -Path $DestinationPath
+  if ($null -eq $sourceTime -or $null -eq $destinationTime) {
+    Write-LogLine -Tag "warn" -Message "could not compare modified times for sync mode, skipping." -Color Yellow -Indent 4
+    return $false
+  }
+
+  $sourceWins = $sourceTime -ge $destinationTime
+  $winnerPath = if ($sourceWins) { $SourcePath } else { $DestinationPath }
+  $loserPath = if ($sourceWins) { $DestinationPath } else { $SourcePath }
+
+  if (Test-Path -LiteralPath $winnerPath -PathType Container) {
+    Write-LogLine -Tag "copy" -Message ("{0} is newer, incrementally syncing folder." -f (if ($sourceWins) { "source" } else { "destination" })) -Color Green -Indent 4
+    return (Invoke-SyncTreeIncremental -SourceRoot $winnerPath -DestinationRoot $loserPath -UseTrash $UseTrash -TrashDir $TrashDir)
+  }
+
+  Write-LogLine -Tag "copy" -Message ("{0} is newer, copying file to the other side." -f (if ($sourceWins) { "source" } else { "destination" })) -Color Green -Indent 4
+  if ($sourceWins) {
+    return (Copy-PathByHash -SourcePath $SourcePath -DestinationPath $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir)
+  }
+
+  return (Copy-PathByHash -SourcePath $DestinationPath -DestinationPath $SourcePath -UseTrash $UseTrash -TrashDir $TrashDir)
+}
+
 function Get-ApplyDestinationDecision {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Mode,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$SourcePath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$DestinationPath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [bool]$UseTrash,
 
     [Parameter()]
@@ -950,7 +1415,7 @@ function Get-ApplyDestinationDecision {
   )
 
   $result = [pscustomobject]@{
-    Proceed = $true
+    Proceed     = $true
     NeedsCreate = $true
   }
 
@@ -1025,22 +1490,22 @@ function Get-ApplyDestinationDecision {
 function Invoke-CreateTrackedLinkForMode {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Mode,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$SourcePath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$DestinationPath,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$ToKey,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     $LinksObject,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [pscustomobject]$DesiredItem
   )
 
@@ -1065,16 +1530,16 @@ function Invoke-CreateTrackedLinkForMode {
     }
     "shortcut" {
       $scParams = @{ Path = $DestinationPath; TargetPath = $SourcePath }
-      $scWorkDir  = $DesiredItem | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
-      $scArgs     = $DesiredItem | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
-      $scDesc     = $DesiredItem | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
-      $scIcon     = $DesiredItem | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
+      $scWorkDir = $DesiredItem | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
+      $scArgs = $DesiredItem | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
+      $scDesc = $DesiredItem | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
+      $scIcon = $DesiredItem | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
       $scWinStyle = $DesiredItem | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
-      if ($scWorkDir)            { $scParams.WorkingDirectory = [System.Environment]::ExpandEnvironmentVariables($scWorkDir) }
-      if ($scArgs)               { $scParams.Arguments        = [System.Environment]::ExpandEnvironmentVariables($scArgs) }
-      if ($scDesc)               { $scParams.Description      = $scDesc }
-      if ($scIcon)               { $scParams.IconLocation     = [System.Environment]::ExpandEnvironmentVariables($scIcon) }
-      if ($null -ne $scWinStyle) { $scParams.WindowStyle      = Resolve-WindowStyle $scWinStyle }
+      if ($scWorkDir) { $scParams.WorkingDirectory = [System.Environment]::ExpandEnvironmentVariables($scWorkDir) }
+      if ($scArgs) { $scParams.Arguments = [System.Environment]::ExpandEnvironmentVariables($scArgs) }
+      if ($scDesc) { $scParams.Description = $scDesc }
+      if ($scIcon) { $scParams.IconLocation = [System.Environment]::ExpandEnvironmentVariables($scIcon) }
+      if ($null -ne $scWinStyle) { $scParams.WindowStyle = Resolve-WindowStyle $scWinStyle }
       New-WindowsShortcut @scParams
       Write-LogLine -Tag "create" -Message "shortcut created." -Color Green -Indent 4
       Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode
@@ -1094,7 +1559,7 @@ foreach ($p in $config.packages.PSObject.Properties) {
 function Test-PackageEnabled {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [pscustomobject]$PackageObject
   )
 
@@ -1108,7 +1573,8 @@ $selectedPackages = @()
 if ($Package -and $Package.Count -gt 0) {
   # Explicit selection (even if disabled)
   $selectedPackages = @($Package)
-} else {
+}
+else {
   # Default: enabled packages only
   foreach ($k in $packagesMap.Keys) {
     if (Test-PackageEnabled -PackageObject $packagesMap[$k]) {
@@ -1123,13 +1589,13 @@ if ($Status) {
   $rows = @()
 
   foreach ($pkgProp in $state.packages.PSObject.Properties) {
-    $pkgName  = $pkgProp.Name
+    $pkgName = $pkgProp.Name
     $pkgLinks = $pkgProp.Value | Select-Object -ExpandProperty links -ErrorAction SilentlyContinue
     if ($null -eq $pkgLinks) { continue }
 
     foreach ($linkProp in $pkgLinks.PSObject.Properties) {
       $entry = $linkProp.Value
-      $toVal   = $entry | Select-Object -ExpandProperty to   -ErrorAction SilentlyContinue
+      $toVal = $entry | Select-Object -ExpandProperty to   -ErrorAction SilentlyContinue
       $fromVal = $entry | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
       $modeVal = $entry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
 
@@ -1150,7 +1616,8 @@ if ($Status) {
 
   if ($rows.Count -eq 0) {
     Write-Host "No tracked items found in state file: $statePath" -ForegroundColor Yellow
-  } else {
+  }
+  else {
     $groupedRows = $rows | Sort-Object Package, To | Group-Object Package
 
     foreach ($pkgGroup in $groupedRows) {
@@ -1168,7 +1635,8 @@ if ($Status) {
       $headerColor = "Cyan"
       if ($missingCount -gt 0) {
         $headerColor = "Red"
-      } elseif ($driftedCount -gt 0) {
+      }
+      elseif ($driftedCount -gt 0) {
         $headerColor = "Yellow"
       }
 
@@ -1176,15 +1644,16 @@ if ($Status) {
       Write-LogLine -Tag "package" -Message ("{0} ({1})" -f $pkgGroup.Name, $summary) -Color $headerColor
 
       $pkgRows |
-        Sort-Object -Property @{ Expression = {
+      Sort-Object -Property @{ Expression = {
           switch ($_.Status) {
             "DRIFTED" { 0 }
             "MISSING" { 1 }
-            "OK"      { 2 }
-            default     { 3 }
+            "OK" { 2 }
+            default { 3 }
           }
-        } }, Mode, To |
-        Format-Table -AutoSize -Property Mode, Status, To
+        } 
+      }, Mode, To |
+      Format-Table -AutoSize -Property Mode, Status, To
     }
   }
   return
@@ -1196,7 +1665,8 @@ if ($Unlink -or $Relink) {
   $unlinkPkgs = @()
   if ($Package -and $Package.Count -gt 0) {
     $unlinkPkgs = @($Package)
-  } else {
+  }
+  else {
     $unlinkPkgs = @()
     foreach ($prop in $state.packages.PSObject.Properties) {
       $unlinkPkgs += $prop.Name
@@ -1299,7 +1769,8 @@ foreach ($pkg in $selectedPackages) {
     $fromResolved = $null
     try {
       $fromResolved = (Resolve-Path -LiteralPath $fromExpanded).Path
-    } catch {
+    }
+    catch {
       Write-ItemHeader -Mode $mode -From $fromExpanded -To $toExpanded
 
       $isRecoverableLinkMode = ($mode -eq "symlink" -or $mode -eq "junction" -or $mode -eq "hardlink")
@@ -1308,31 +1779,34 @@ foreach ($pkg in $selectedPackages) {
         if ($recovered) {
           try {
             $fromResolved = (Resolve-Path -LiteralPath $fromExpanded).Path
-          } catch {
+          }
+          catch {
             Write-LogLine -Tag "warn" -Message "recovery attempted, but source still missing, skipping." -Color Yellow -Indent 4
             continue
           }
-        } else {
+        }
+        else {
           Write-LogLine -Tag "warn" -Message "source missing, skipping." -Color Yellow -Indent 4
           continue
         }
-      } else {
+      }
+      else {
         Write-LogLine -Tag "warn" -Message "source missing, skipping." -Color Yellow -Indent 4
         continue
       }
     }
 
-    $desiredEntry = [pscustomobject]@{ to=$toExpanded; from=$fromResolved; mode=$mode }
+    $desiredEntry = [pscustomobject]@{ to = $toExpanded; from = $fromResolved; mode = $mode }
     if ($mode -eq "shortcut") {
-      $scWorkDir  = $it | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
-      $scArgs     = $it | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
-      $scDesc     = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
-      $scIcon     = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
+      $scWorkDir = $it | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
+      $scArgs = $it | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
+      $scDesc = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
+      $scIcon = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
       $scWinStyle = $it | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
-      if ($null -ne $scWorkDir)  { $desiredEntry | Add-Member -MemberType NoteProperty -Name workingDirectory -Value ([string]$scWorkDir) }
-      if ($null -ne $scArgs)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name arguments        -Value ([string]$scArgs) }
-      if ($null -ne $scDesc)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name description      -Value ([string]$scDesc) }
-      if ($null -ne $scIcon)     { $desiredEntry | Add-Member -MemberType NoteProperty -Name iconLocation     -Value ([string]$scIcon) }
+      if ($null -ne $scWorkDir) { $desiredEntry | Add-Member -MemberType NoteProperty -Name workingDirectory -Value ([string]$scWorkDir) }
+      if ($null -ne $scArgs) { $desiredEntry | Add-Member -MemberType NoteProperty -Name arguments        -Value ([string]$scArgs) }
+      if ($null -ne $scDesc) { $desiredEntry | Add-Member -MemberType NoteProperty -Name description      -Value ([string]$scDesc) }
+      if ($null -ne $scIcon) { $desiredEntry | Add-Member -MemberType NoteProperty -Name iconLocation     -Value ([string]$scIcon) }
       if ($null -ne $scWinStyle) { $desiredEntry | Add-Member -MemberType NoteProperty -Name windowStyle      -Value (Resolve-WindowStyle $scWinStyle) }
     }
     $desired[$toExpanded] = $desiredEntry
@@ -1366,13 +1840,21 @@ foreach ($pkg in $selectedPackages) {
 
   # Apply desired
   foreach ($toKey in $desired.Keys) {
-    $it   = $desired[$toKey]
+    $it = $desired[$toKey]
     $mode = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
     $from = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
-    $to   = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+    $to = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
 
     try {
       Write-ItemHeader -Mode $mode -From $from -To $to
+
+      if ($mode -eq "sync") {
+        if (Invoke-SyncHashMode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir) {
+          Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+        }
+        continue
+      }
+
       New-ParentDirectoryIfMissing -Path $to
 
       if ($Force -and (Test-Path -LiteralPath $to)) {
@@ -1399,7 +1881,8 @@ foreach ($pkg in $selectedPackages) {
       }
 
       Invoke-CreateTrackedLinkForMode -Mode $mode -SourcePath $from -DestinationPath $to -ToKey $toKey -LinksObject $links -DesiredItem $it
-    } catch {
+    }
+    catch {
       $errMsg = $_.Exception.Message
       Write-LogLine -Tag "error" -Message ("failed to process item (mode={0}): {1}" -f $mode, $errMsg) -Color Red -Indent 4
       continue
@@ -1415,7 +1898,7 @@ foreach ($pkg in $selectedPackages) {
 # ---------------- Save state ----------------
 
 $state.updated = (Get-Date).ToString("o")
-$state.config  = $configFull
+$state.config = $configFull
 $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $statePath -Encoding UTF8
 Write-Host ""
 Write-LogLine -Tag "save" -Message ("state saved: {0}" -f $statePath) -Color Green
