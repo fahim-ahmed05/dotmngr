@@ -18,7 +18,7 @@ A simple PowerShell script that manages dotfiles scattered across your system us
 
 ## Requirements
 
-* PowerShell (Windows PowerShell 5.1 or PowerShell 7+)
+* PowerShell 7+ (PowerShell Core)
 * `robocopy` (built into Windows)
 
 ### Symlink permissions

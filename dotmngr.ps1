@@ -91,7 +91,7 @@ function New-DirectoryIfMissing {
   )
 
   if (!(Test-Path -LiteralPath $Path)) {
-    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    New-Item -ItemType Directory -Path $Path -Force > $null
   }
 }
 
@@ -616,7 +616,7 @@ function Invoke-RobocopySafe {
     [string[]]$Arguments
   )
 
-  & robocopy $Source $Destination @Arguments | Out-Null
+  & robocopy $Source $Destination @Arguments > $null
   $code = $LASTEXITCODE
   if ($code -ge 8) { throw "robocopy failed with exit code $code" }
 }
@@ -672,7 +672,7 @@ function Write-ItemHeader {
 
 # ---------------- Load config ----------------
 
-$config = (Get-Content -LiteralPath $ConfigPath -Raw) | ConvertFrom-Json
+$config = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $ConfigPath -Raw)
 if (-not $config.global) { throw "Config must contain 'global'." }
 if (-not $config.packages) { throw "Config must contain 'packages'." }
 
@@ -724,7 +724,7 @@ $state = [pscustomobject]@{
 
 if (Test-Path -LiteralPath $statePath) {
   try {
-    $loaded = (Get-Content -LiteralPath $statePath -Raw) | ConvertFrom-Json
+    $loaded = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $statePath -Raw)
     if ($loaded) {
       $loadedPackages = $loaded.PSObject.Properties['packages']?.Value
       if ($loadedPackages) {
@@ -788,9 +788,9 @@ function Get-StateLinkEntries {
     $LinksObject
   )
 
-  $entries = @()
+  $entries = [System.Collections.Generic.List[pscustomobject]]::new()
   foreach ($prop in $LinksObject.PSObject.Properties) {
-    $entries += [PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value }
+    $entries.Add([PSCustomObject]@{ Name = $prop.Name; Value = $prop.Value })
   }
 
   return $entries
@@ -1128,19 +1128,19 @@ function Invoke-CreateTrackedLinkForMode {
       if (Test-Path -LiteralPath $SourcePath -PathType Container) {
         throw "hardlink mode only supports files: $SourcePath"
       }
-      New-Item -ItemType HardLink -Path $DestinationPath -Target $SourcePath -ErrorAction Stop | Out-Null
+      New-Item -ItemType HardLink -Path $DestinationPath -Target $SourcePath -ErrorAction Stop > $null
       Write-LogLine -Tag "create" -Message "hardlink created." -Color Green -Indent 4
-      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
+      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode > $null
     }
     "symlink" {
-      New-Item -ItemType SymbolicLink -Path $DestinationPath -Target $SourcePath -ErrorAction Stop | Out-Null
+      New-Item -ItemType SymbolicLink -Path $DestinationPath -Target $SourcePath -ErrorAction Stop > $null
       Write-LogLine -Tag "create" -Message "symlink created." -Color Green -Indent 4
-      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
+      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode > $null
     }
     "junction" {
-      New-Item -ItemType Junction -Path $DestinationPath -Target $SourcePath -ErrorAction Stop | Out-Null
+      New-Item -ItemType Junction -Path $DestinationPath -Target $SourcePath -ErrorAction Stop > $null
       Write-LogLine -Tag "create" -Message "junction created." -Color Green -Indent 4
-      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
+      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode > $null
     }
     "shortcut" {
       $scParams = @{ Path = $DestinationPath; TargetPath = $SourcePath }
@@ -1156,7 +1156,7 @@ function Invoke-CreateTrackedLinkForMode {
       if ($null -ne $scWinStyle) { $scParams.WindowStyle = Resolve-WindowStyle $scWinStyle }
       New-WindowsShortcut @scParams
       Write-LogLine -Tag "create" -Message "shortcut created." -Color Green -Indent 4
-      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
+      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode > $null
     }
     default {
       throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, seed, shortcut)"
@@ -1183,16 +1183,16 @@ function Test-PackageEnabled {
 }
 
 # Determine packages to run
-$selectedPackages = @()
+$selectedPackages = [System.Collections.Generic.List[string]]::new()
 if ($Package -and $Package.Count -gt 0) {
   # Explicit selection (even if disabled)
-  $selectedPackages = @($Package)
+  $selectedPackages = [System.Collections.Generic.List[string]]::new($Package)
 }
 else {
   # Default: enabled packages only
   foreach ($k in $packagesMap.Keys) {
     if (Test-PackageEnabled -PackageObject $packagesMap[$k]) {
-      $selectedPackages += $k
+      $selectedPackages.Add($k)
     }
   }
 }
@@ -1200,7 +1200,7 @@ else {
 # ---------------- Status mode ----------------
 
 if ($Status) {
-  $rows = @()
+  $rows = [System.Collections.Generic.List[pscustomobject]]::new()
 
   foreach ($pkgProp in $state.packages.PSObject.Properties) {
     $pkgName = $pkgProp.Name
@@ -1218,13 +1218,13 @@ if ($Status) {
       $modeText = if ($modeVal) { [string]$modeVal } else { "" }
       $linkStatus = Get-TrackedItemStatus -Destination $toPath -Source $fromPath -Mode $modeText
 
-      $rows += [pscustomobject]@{
+      $rows.Add([pscustomobject]@{
         Package = $pkgName
         Mode    = $modeText
         Status  = $linkStatus
         To      = $toPath
         From    = $fromPath
-      }
+      })
     }
   }
 
@@ -1321,17 +1321,17 @@ function Invoke-AdminElevatedLinks {
     $tempPayloadFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "dotmngr_admin_payload_$(Get-Random).json")
     $tempResultFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "dotmngr_admin_result_$(Get-Random).json")
 
-    $payloadItems = @()
+    $payloadItems = [System.Collections.Generic.List[pscustomobject]]::new()
     foreach ($item in $AdminDesiredItems) {
-      $payloadItems += [pscustomobject]@{
+      $payloadItems.Add([pscustomobject]@{
         toKey = $item.toKey
         mode  = $item.mode
         from  = $item.from
         to    = $item.to
-      }
+      })
     }
 
-    $payloadItems | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $tempPayloadFile -Encoding UTF8
+    Set-Content -LiteralPath $tempPayloadFile -Value (ConvertTo-Json -InputObject $payloadItems -Depth 10) -Encoding UTF8
 
     $escapedPayloadFile = $tempPayloadFile.Replace("'", "''")
     $escapedResultFile = $tempResultFile.Replace("'", "''")
@@ -1347,20 +1347,20 @@ function New-ItemSafe {
   try {
     `$parent = [System.IO.Path]::GetDirectoryName(`$Path)
     if (`$parent -and -not (Test-Path -LiteralPath `$parent)) {
-      New-Item -ItemType Directory -Path `$parent -Force -ErrorAction Stop | Out-Null
+      New-Item -ItemType Directory -Path `$parent -Force -ErrorAction Stop > $null
     }
 
     switch ((`$Mode).ToLower()) {
-      'hardlink' { New-Item -ItemType HardLink -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
-      'junction' { New-Item -ItemType Junction -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
-      'symlink' { New-Item -ItemType SymbolicLink -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
+      'hardlink' { New-Item -ItemType HardLink -Path `$Path -Target `$Target -Force -ErrorAction Stop > $null }
+      'junction' { New-Item -ItemType Junction -Path `$Path -Target `$Target -Force -ErrorAction Stop > $null }
+      'symlink' { New-Item -ItemType SymbolicLink -Path `$Path -Target `$Target -Force -ErrorAction Stop > $null }
       'shortcut' {
         `$wsh = New-Object -ComObject WScript.Shell
         `$sc = `$wsh.CreateShortcut(`$Path)
         `$sc.TargetPath = `$Target
         `$sc.Save()
       }
-      default { New-Item -ItemType `$Mode -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
+      default { New-Item -ItemType `$Mode -Path `$Path -Target `$Target -Force -ErrorAction Stop > $null }
     }
 
     return @{ success = `$true; error = `$null }
@@ -1370,12 +1370,12 @@ function New-ItemSafe {
   }
 }
 
-`$items = @(Get-Content -LiteralPath `$payloadFile -Raw | ConvertFrom-Json)
+`$items = @(ConvertFrom-Json -InputObject (Get-Content -LiteralPath `$payloadFile -Raw))
 foreach (`$item in `$items) {
   `$results[`$item.toKey] = New-ItemSafe -Mode `$item.mode -Path `$item.to -Target `$item.from
 }
 
-`$results | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath `$tempResultFile -Encoding UTF8
+Set-Content -LiteralPath `$tempResultFile -Value (ConvertTo-Json -InputObject `$results -Depth 10) -Encoding UTF8
 "@
 
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcherScript))
@@ -1399,7 +1399,7 @@ foreach (`$item in `$items) {
       return $false
     }
 
-    $results = Get-Content -LiteralPath $tempResultFile -Raw | ConvertFrom-Json
+    $results = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $tempResultFile -Raw)
     $allSuccess = $true
 
     foreach ($toKey in $results.PSObject.Properties.Name) {
@@ -1408,7 +1408,7 @@ foreach (`$item in `$items) {
 
       if ($result.success) {
         Write-LogLine -Tag "create" -Message ("{0} created (elevated)." -f $item.mode) -Color Green -Indent 4
-        Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $toKey -SourcePath $item.from -Mode $item.mode | Out-Null
+        Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $toKey -SourcePath $item.from -Mode $item.mode > $null
       }
       else {
         Write-LogLine -Tag "error" -Message ("failed to create {0}: {1}" -f $item.mode, $result.error) -Color Red -Indent 4
@@ -1439,14 +1439,14 @@ $applyStateWasModified = $false
 # ---------------- Unlink / Relink mode ----------------
 
 if ($Unlink -or $Relink) {
-  $unlinkPkgs = @()
+  $unlinkPkgs = [System.Collections.Generic.List[string]]::new()
   if ($Package -and $Package.Count -gt 0) {
-    $unlinkPkgs = @($Package)
+    $unlinkPkgs = [System.Collections.Generic.List[string]]::new($Package)
   }
   else {
-    $unlinkPkgs = @()
+    $unlinkPkgs = [System.Collections.Generic.List[string]]::new()
     foreach ($prop in $state.packages.PSObject.Properties) {
-      $unlinkPkgs += $prop.Name
+      $unlinkPkgs.Add($prop.Name)
     }
   }
 
@@ -1462,16 +1462,16 @@ if ($Unlink -or $Relink) {
     $links = Get-StatePackageLinks -Name $pkg
 
     $toKeys = Get-StateLinkEntries -LinksObject $links
-    $fileEntries = @()
-    $containerEntries = @()
+    $fileEntries = [System.Collections.Generic.List[pscustomobject]]::new()
+    $containerEntries = [System.Collections.Generic.List[pscustomobject]]::new()
 
     foreach ($toKeyInfo in $toKeys) {
       $resolvedTo = Resolve-DotmngrPath -Path $toKeyInfo.Name
       if (Test-Path -LiteralPath $resolvedTo -PathType Container) {
-        $containerEntries += $toKeyInfo
+        $containerEntries.Add($toKeyInfo)
       }
       else {
-        $fileEntries += $toKeyInfo
+        $fileEntries.Add($toKeyInfo)
       }
     }
 
@@ -1497,7 +1497,7 @@ if ($Unlink -or $Relink) {
   
   # Only save state immediately if doing -Unlink without -Relink
   if ($Unlink -and -not $Relink) {
-    $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Set-Content -LiteralPath $statePath -Value (ConvertTo-Json -InputObject $state -Depth 20) -Encoding UTF8
     Write-Host ""
     Write-LogLine -Tag "save" -Message ("state saved: {0}" -f $statePath) -Color Green
     return
@@ -1514,10 +1514,10 @@ if (-not ($Package -and $Package.Count -gt 0)) {
     Invoke-PackageCleanupFromState -PackageName $pkgName -Tag "disable" -Reason "enabled=false; cleaning managed links" -UseTrash $globalTrash -TrashDir $globalTrashDir
   }
 
-  $orphanStatePackages = @()
+  $orphanStatePackages = [System.Collections.Generic.List[string]]::new()
   foreach ($pkgProp in $state.packages.PSObject.Properties) {
     if (-not $packagesMap.ContainsKey($pkgProp.Name)) {
-      $orphanStatePackages += $pkgProp.Name
+      $orphanStatePackages.Add($pkgProp.Name)
     }
   }
 
@@ -1639,24 +1639,24 @@ foreach ($pkg in $selectedPackages) {
   }
 
   # Apply desired - partition into admin and non-admin items
-  $adminItems = @()
-  $regularItems = @()
+  $adminItems = [System.Collections.Generic.List[hashtable]]::new()
+  $regularItems = [System.Collections.Generic.List[hashtable]]::new()
   
   foreach ($toKey in $desired.Keys) {
     $it = $desired[$toKey]
     $needsAdmin = Test-ItemNeedsAdmin -ItemObject $it -PackageObject $pkgObj
     
     if ($needsAdmin) {
-      $adminItems += @{ toKey = $toKey; item = $it }
+      $adminItems.Add(@{ toKey = $toKey; item = $it })
     }
     else {
-      $regularItems += @{ toKey = $toKey; item = $it }
+      $regularItems.Add(@{ toKey = $toKey; item = $it })
     }
   }
 
   # Process admin items first (elevated batch)
   if ($adminItems.Count -gt 0) {
-    $adminDesired = @()
+    $adminDesired = [System.Collections.Generic.List[hashtable]]::new()
 
     foreach ($entry in $adminItems) {
       $toKey = $entry.toKey
@@ -1699,12 +1699,12 @@ foreach ($pkg in $selectedPackages) {
         }
 
         # Queue for elevated creation
-        $adminDesired += @{
+        $adminDesired.Add(@{
           toKey = $toKey
           mode  = $mode
           from  = $from
           to    = $to
-        }
+        })
       }
       catch {
         $errMsg = $_.Exception.Message
@@ -1786,6 +1786,6 @@ if ($applyStateWasModified -or $unlinkStateWasModified) {
   $state.updated = (Get-Date).ToString("o")
 }
 $state.config = $configFull
-$state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $statePath -Encoding UTF8
+Set-Content -LiteralPath $statePath -Value (ConvertTo-Json -InputObject $state -Depth 20) -Encoding UTF8
 Write-Host ""
 Write-LogLine -Tag "save" -Message ("state saved: {0}" -f $statePath) -Color Green
