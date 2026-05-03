@@ -73,9 +73,9 @@ function Resolve-DotmngrPath {
   # Expand %VARS% (and other env vars). We do NOT support "~".
   $expanded = [System.Environment]::ExpandEnvironmentVariables($Path)
 
-  # Resolve if exists; otherwise return expanded.
+  # GetFullPath normalizes the path instantly without throwing if the file doesn't exist.
   try {
-    return (Resolve-Path -LiteralPath $expanded).Path
+    return [System.IO.Path]::GetFullPath($expanded)
   }
   catch {
     return $expanded
@@ -116,8 +116,7 @@ function Test-ReparsePoint {
   )
 
   if (!(Test-Path -LiteralPath $Path)) { return $false }
-  $item = Get-Item -LiteralPath $Path -Force
-  return [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+  return ([System.IO.File]::GetAttributes($Path) -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint
 }
 
 function Get-ShortcutTarget {
@@ -211,23 +210,21 @@ function Get-LinkTargetPath {
   if (!(Test-Path -LiteralPath $Path)) { return $null }
   
   try {
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-    if ($null -eq $item) { return $null }
+    $target = if (Test-Path -LiteralPath $Path -PathType Container) {
+      [System.IO.Directory]::ResolveLinkTarget($Path, $false)
+    } else {
+      [System.IO.File]::ResolveLinkTarget($Path, $false)
+    }
     
-    $target = $item.Target
-    if ($null -eq $target) { return $null }
-    
-    # Handle array of targets (edge case)
-    if ($target -is [System.Array]) { $target = $target[0] }
-    
-    return (Resolve-DotmngrPath -Path ([string]$target))
+    if ($null -ne $target) { 
+      return (Resolve-DotmngrPath -Path $target.FullName)
+    }
+    return $null
   }
   catch {
     return $null
   }
 }
-
-# Path-hash and tree helpers removed (not used).
 
 function Remove-DestinationForOverwrite {
   [CmdletBinding()]
@@ -248,12 +245,7 @@ function Remove-DestinationForOverwrite {
   # Handle reparse points (symlinks/junctions) - remove only the link, not the target
   if (Test-ReparsePoint -Path $Path) {
     try {
-      if (Test-Path -LiteralPath $Path -PathType Container) {
-        cmd /c "rmdir `"$Path`"" 2>$null
-      }
-      else {
-        Remove-Item -LiteralPath $Path -Force
-      }
+      Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
       Write-LogLine -Tag "remove" -Message "reparse point removed." -Color Yellow -Indent 4
       return $true
     }
@@ -407,12 +399,7 @@ function Remove-ManagedDestination {
   # For reparse points (symlinks/junctions): remove only the link
   if (Test-ReparsePoint -Path $Path) {
     try {
-      if (Test-Path -LiteralPath $Path -PathType Container) {
-        cmd /c "rmdir `"$Path`"" 2>$null
-      }
-      else {
-        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
-      }
+      Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
       Write-LogLine -Tag "remove" -Message "reparse point removed." -Color Yellow -Indent 4
       return $true
     }
@@ -534,8 +521,8 @@ function Test-ShouldRemoveManagedLink {
   # Safe removal: remove only if destination still matches what we managed.
   if (!(Test-Path -LiteralPath $Destination)) { return $false }
 
-  $modeValue = $StateEntry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
-  $fromValue = $StateEntry | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
+  $modeValue = $StateEntry.PSObject.Properties['mode']?.Value
+  $fromValue = $StateEntry.PSObject.Properties['from']?.Value
 
   $mode = if ($modeValue) { ([string]$modeValue).ToLower() } else { "" }
   $from = if ($fromValue) { Resolve-DotmngrPath -Path ([string]$fromValue) } else { "" }
@@ -690,7 +677,7 @@ if (-not $config.global) { throw "Config must contain 'global'." }
 if (-not $config.packages) { throw "Config must contain 'packages'." }
 
 # Safely access mode property with diagnostics
-$modeProperty = $config.global | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+$modeProperty =$config.global.PSObject.Properties['mode']?.Value
 if ($null -eq $modeProperty) {
   Write-Host "WARN: global.mode not found or empty. Available properties in global:" -ForegroundColor Yellow
   $config.global | Get-Member -MemberType NoteProperty | ForEach-Object { Write-Host "  - $($_.Name)" }
@@ -700,8 +687,8 @@ else {
   $globalMode = ([string]$modeProperty).ToLower()
 }
 
-$globalTrash = [bool]($config.global | Select-Object -ExpandProperty trash -ErrorAction SilentlyContinue)
-$globalTrashDirVal = $config.global | Select-Object -ExpandProperty trashDir -ErrorAction SilentlyContinue
+$globalTrash =[bool]($config.global.PSObject.Properties['trash']?.Value)
+$globalTrashDirVal =$config.global.PSObject.Properties['trashDir']?.Value
 
 if ($globalTrash) {
   if ([string]::IsNullOrWhiteSpace([string]$globalTrashDirVal)) {
@@ -720,16 +707,7 @@ if ($globalTrash -and -not [string]::IsNullOrWhiteSpace($globalTrashDir)) {
   New-DirectoryIfMissing -Path $globalTrashDir
 }
 
-# Normalize paths to remove trailing backslashes for consistent comparisons
-function Get-NormalizedPath {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$Path
-  )
-  return $Path.TrimEnd("\") 
-}
+
 $userProfile = [System.Environment]::GetFolderPath('UserProfile')
 $stateDir = Join-Path $userProfile ".config\dotmngr"
 New-DirectoryIfMissing -Path $stateDir
@@ -748,7 +726,7 @@ if (Test-Path -LiteralPath $statePath) {
   try {
     $loaded = (Get-Content -LiteralPath $statePath -Raw) | ConvertFrom-Json
     if ($loaded) {
-      $loadedPackages = $loaded | Select-Object -ExpandProperty packages -ErrorAction SilentlyContinue
+      $loadedPackages = $loaded.PSObject.Properties['packages']?.Value
       if ($loadedPackages) {
         if ($loadedPackages -is [hashtable]) {
           $state.packages = [pscustomobject]$loadedPackages
@@ -835,7 +813,7 @@ function Invoke-TrackedEntryCleanup {
     [string]$PathOutputStyle = "cleanup"
   )
 
-  $oldToVal = $StateEntry | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+  $oldToVal = $StateEntry.PSObject.Properties['to']?.Value
   if ([string]::IsNullOrWhiteSpace($oldToVal)) { return $true }
 
   $oldTo = Resolve-DotmngrPath -Path ([string]$oldToVal)
@@ -847,15 +825,15 @@ function Invoke-TrackedEntryCleanup {
     Write-LogLine -Tag "cleanup" -Message $oldTo -Color Cyan -Indent 2
   }
 
-  $entryMode = ([string]($StateEntry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)).ToLower()
+  $entryMode = ([string]($StateEntry.PSObject.Properties['mode']?.Value)).ToLower()
   if ($entryMode -eq "seed") {
     Write-LogLine -Tag "untrack" -Message "seed mode; leaving paths untouched." -Color Cyan -Indent 4
     return $true
   }
 
   if (Test-ShouldRemoveManagedLink -Destination $oldTo -StateEntry $StateEntry) {
-    $entryMode = [string]($StateEntry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)
-    $entrySource = [string]($StateEntry | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue)
+    $entryMode = [string]($StateEntry.PSObject.Properties['mode']?.Value)
+    $entrySource = [string]($StateEntry.PSObject.Properties['from']?.Value)
     $removed = Remove-ManagedDestination -Path $oldTo -UseTrash $UseTrash -TrashDir $TrashDir -ManagedMode $entryMode -ManagedSource $entrySource
     if (-not $removed -and (Test-Path -LiteralPath $oldTo)) {
       Write-LogLine -Tag "warn" -Message "removal failed; keeping state entry." -Color Yellow -Indent 4
@@ -1166,11 +1144,11 @@ function Invoke-CreateTrackedLinkForMode {
     }
     "shortcut" {
       $scParams = @{ Path = $DestinationPath; TargetPath = $SourcePath }
-      $scWorkDir = $DesiredItem | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
-      $scArgs = $DesiredItem | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
-      $scDesc = $DesiredItem | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
-      $scIcon = $DesiredItem | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
-      $scWinStyle = $DesiredItem | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
+      $scWorkDir = $DesiredItem.PSObject.Properties['workingDirectory']?.Value
+      $scArgs = $DesiredItem.PSObject.Properties['arguments']?.Value
+      $scDesc = $DesiredItem.PSObject.Properties['description']?.Value
+      $scIcon = $DesiredItem.PSObject.Properties['iconLocation']?.Value
+      $scWinStyle = $DesiredItem.PSObject.Properties['windowStyle']?.Value
       if ($scWorkDir) { $scParams.WorkingDirectory = [System.Environment]::ExpandEnvironmentVariables($scWorkDir) }
       if ($scArgs) { $scParams.Arguments = [System.Environment]::ExpandEnvironmentVariables($scArgs) }
       if ($scDesc) { $scParams.Description = $scDesc }
@@ -1199,7 +1177,7 @@ function Test-PackageEnabled {
     [pscustomobject]$PackageObject
   )
 
-  $enabledVal = $PackageObject | Select-Object -ExpandProperty enabled -ErrorAction SilentlyContinue
+  $enabledVal = $PackageObject.PSObject.Properties['enabled']?.Value
   if ($null -eq $enabledVal) { return $true }
   return [bool]$enabledVal
 }
@@ -1226,14 +1204,14 @@ if ($Status) {
 
   foreach ($pkgProp in $state.packages.PSObject.Properties) {
     $pkgName = $pkgProp.Name
-    $pkgLinks = $pkgProp.Value | Select-Object -ExpandProperty links -ErrorAction SilentlyContinue
+    $pkgLinks =$pkgProp.Value.PSObject.Properties['links']?.Value
     if ($null -eq $pkgLinks) { continue }
 
     foreach ($linkProp in $pkgLinks.PSObject.Properties) {
       $entry = $linkProp.Value
-      $toVal = $entry | Select-Object -ExpandProperty to   -ErrorAction SilentlyContinue
-      $fromVal = $entry | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
-      $modeVal = $entry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+      $toVal = $entry.PSObject.Properties['to']?.Value
+      $fromVal = $entry.PSObject.Properties['from']?.Value
+      $modeVal = $entry.PSObject.Properties['mode']?.Value
 
       $toPath = if ($toVal) { Resolve-DotmngrPath -Path ([string]$toVal) } else { "" }
       $fromPath = if ($fromVal) { Resolve-DotmngrPath -Path ([string]$fromVal) } else { "" }
@@ -1308,11 +1286,11 @@ function Test-ItemNeedsAdmin {
   )
 
   # Check item-level admin flag first
-  $itemAdmin = $ItemObject | Select-Object -ExpandProperty admin -ErrorAction SilentlyContinue
+  $itemAdmin = $ItemObject.PSObject.Properties['admin']?.Value
   if ($null -ne $itemAdmin -and [bool]$itemAdmin) { return $true }
 
   # Check package-level admin flag
-  $pkgAdmin = $PackageObject | Select-Object -ExpandProperty admin -ErrorAction SilentlyContinue
+  $pkgAdmin = $PackageObject.PSObject.Properties['admin']?.Value
   if ($null -ne $pkgAdmin -and [bool]$pkgAdmin) { return $true }
 
   return $false
@@ -1558,7 +1536,7 @@ foreach ($pkg in $selectedPackages) {
   $pkgObj = $packagesMap[$pkg]
   if (-not $pkgObj.items) { throw "Package '$pkg' must contain 'items' array." }
 
-  $pkgModeValue = $pkgObj | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+  $pkgModeValue = $pkgObj.PSObject.Properties['mode']?.Value
   $pkgMode = if ($pkgModeValue) { ([string]$pkgModeValue).ToLower() } else { $globalMode }
   $useTrash = $globalTrash
   $trashDir = $globalTrashDir
@@ -1568,11 +1546,11 @@ foreach ($pkg in $selectedPackages) {
   $desired = @{} # toResolved -> {to,from,mode}
 
   foreach ($it in $pkgObj.items) {
-    $itModeValue = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+    $itModeValue = $it.PSObject.Properties['mode']?.Value
     $mode = if ($itModeValue) { ([string]$itModeValue).ToLower() } else { $pkgMode }
 
-    $itTo = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
-    $itFrom = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
+    $itTo = $it.PSObject.Properties['to']?.Value
+    $itFrom = $it.PSObject.Properties['from']?.Value
 
     # Validate required properties
     if ([string]::IsNullOrWhiteSpace($itTo) -or [string]::IsNullOrWhiteSpace($itFrom)) {
@@ -1613,15 +1591,15 @@ foreach ($pkg in $selectedPackages) {
       }
     }
 
-    $itemAdmin = $it | Select-Object -ExpandProperty admin -ErrorAction SilentlyContinue
-    if ($null -eq $itemAdmin) { $itemAdmin = $pkgObj | Select-Object -ExpandProperty admin -ErrorAction SilentlyContinue }
+    $itemAdmin = $it.PSObject.Properties['admin']?.Value
+    if ($null -eq $itemAdmin) { $itemAdmin = $pkgObj.PSObject.Properties['admin']?.Value }
     $desiredEntry = [pscustomobject]@{ to = $toExpanded; from = $fromResolved; mode = $mode; admin = [bool]$itemAdmin }
     if ($mode -eq "shortcut") {
-      $scWorkDir = $it | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
-      $scArgs = $it | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
-      $scDesc = $it | Select-Object -ExpandProperty description      -ErrorAction SilentlyContinue
-      $scIcon = $it | Select-Object -ExpandProperty iconLocation     -ErrorAction SilentlyContinue
-      $scWinStyle = $it | Select-Object -ExpandProperty windowStyle      -ErrorAction SilentlyContinue
+      $scWorkDir = $it.PSObject.Properties['workingDirectory']?.Value
+      $scArgs = $it.PSObject.Properties['arguments']?.Value
+      $scDesc = $it.PSObject.Properties['description']?.Value
+      $scIcon = $it.PSObject.Properties['iconLocation']?.Value
+      $scWinStyle = $it.PSObject.Properties['windowStyle']?.Value
       if ($null -ne $scWorkDir) { $desiredEntry | Add-Member -MemberType NoteProperty -Name workingDirectory -Value ([string]$scWorkDir) }
       if ($null -ne $scArgs) { $desiredEntry | Add-Member -MemberType NoteProperty -Name arguments        -Value ([string]$scArgs) }
       if ($null -ne $scDesc) { $desiredEntry | Add-Member -MemberType NoteProperty -Name description      -Value ([string]$scDesc) }
@@ -1640,7 +1618,7 @@ foreach ($pkg in $selectedPackages) {
   foreach ($propInfo in $propNames) {
     $toKey = $propInfo.Name
     if ($desired.ContainsKey($toKey)) {
-      $desiredModeVal = $desired[$toKey] | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+      $desiredModeVal =$desired[$toKey].PSObject.Properties['mode']?.Value
       $desiredMode = if ($desiredModeVal) { ([string]$desiredModeVal).ToLower() } else { "" }
 
       if ($desiredMode -eq "seed") {
@@ -1683,9 +1661,9 @@ foreach ($pkg in $selectedPackages) {
     foreach ($entry in $adminItems) {
       $toKey = $entry.toKey
       $it = $entry.item
-      $mode = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
-      $from = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
-      $to = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+      $mode = $it.PSObject.Properties['mode']?.Value
+      $from = $it.PSObject.Properties['from']?.Value
+      $to = $it.PSObject.Properties['to']?.Value
 
       try {
         Write-ItemHeader -Mode $mode -From $from -To $to
@@ -1747,9 +1725,9 @@ foreach ($pkg in $selectedPackages) {
   foreach ($entry in $regularItems) {
     $toKey = $entry.toKey
     $it = $entry.item
-    $mode = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
-    $from = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
-    $to = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+    $mode = $it.PSObject.Properties['mode']?.Value
+    $from = $it.PSObject.Properties['from']?.Value
+    $to = $it.PSObject.Properties['to']?.Value
 
     try {
       Write-ItemHeader -Mode $mode -From $from -To $to
