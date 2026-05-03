@@ -958,7 +958,7 @@ if ($globalTrash -and -not [string]::IsNullOrWhiteSpace($globalTrashDir)) {
 }
 
 # Normalize paths to remove trailing backslashes for consistent comparisons
-function Normalize-Path {
+function Get-NormalizedPath {
   [CmdletBinding()]
   param(
     [Parameter(Mandatory = $true)]
@@ -1847,6 +1847,20 @@ if ($Unlink -or $Relink) {
     $links = Get-StatePackageLinks -Name $pkg
 
     $toKeys = Get-StateLinkEntries -LinksObject $links
+    $fileEntries = @()
+    $containerEntries = @()
+
+    foreach ($toKeyInfo in $toKeys) {
+      $resolvedTo = Resolve-DotmngrPath -Path $toKeyInfo.Name
+      if (Test-Path -LiteralPath $resolvedTo -PathType Container) {
+        $containerEntries += $toKeyInfo
+      }
+      else {
+        $fileEntries += $toKeyInfo
+      }
+    }
+
+    $toKeys = @($fileEntries + $containerEntries)
 
     foreach ($toKeyInfo in $toKeys) {
       $toKey = $toKeyInfo.Name
