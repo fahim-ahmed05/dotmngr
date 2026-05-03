@@ -18,8 +18,8 @@ A simple PowerShell script that manages dotfiles scattered across your system us
 
 ## Requirements
 
-* PowerShell 7+ (PowerShell Core)
-* `robocopy` (built into Windows)
+* PowerShell 7+
+* Robocopy
 
 ### Symlink permissions
 
