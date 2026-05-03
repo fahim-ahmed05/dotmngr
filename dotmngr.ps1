@@ -1194,12 +1194,27 @@ function Set-TrackedLinkState {
     [string]$Mode
   )
 
+  # Check if link already exists and has same properties
+  $existing = $LinksObject.PSObject.Properties[$DestinationPath]
+  if ($existing) {
+    $existingValue = $existing.Value
+    if ($existingValue.to -eq $DestinationPath -and
+      $existingValue.from -eq $SourcePath -and
+      $existingValue.mode -eq $Mode) {
+      # No change, return false
+      return $false
+    }
+  }
+
+  # Link is new or changed; update it with new timestamp
   $LinksObject | Add-Member -MemberType NoteProperty -Name $DestinationPath -Value ([pscustomobject]@{
       to      = $DestinationPath
       from    = $SourcePath
       mode    = $Mode
       updated = (Get-Date).ToString("o")
     }) -Force
+  
+  return $true
 }
 
 function Invoke-SeedApplyIfNeeded {
@@ -1673,6 +1688,8 @@ if ($Unlink -or $Relink) {
     }
   }
 
+  $unlinkStateWasModified = $false
+  
   foreach ($pkg in $unlinkPkgs) {
     if (-not $state.packages.PSObject.Properties[$pkg]) {
       $tag = if ($Relink) { "relink" } else { "unlink" }
@@ -1693,13 +1710,16 @@ if ($Unlink -or $Relink) {
       $removeStateEntry = Invoke-TrackedEntryCleanup -StateEntry $old -UseTrash $globalTrash -TrashDir $globalTrashDir -PathOutputStyle "bullet"
       if ($removeStateEntry) {
         $links.PSObject.Properties.Remove($toKey)
+        $unlinkStateWasModified = $true
       }
     }
 
     Remove-StatePackageIfEmpty -PackageName $pkg -LinksObject $links
   }
 
-  $state.updated = (Get-Date).ToString("o")
+  if ($unlinkStateWasModified) {
+    $state.updated = (Get-Date).ToString("o")
+  }
   $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $statePath -Encoding UTF8
   Write-Host ""
   Write-LogLine -Tag "save" -Message ("state saved: {0}" -f $statePath) -Color Green
@@ -1731,6 +1751,9 @@ if (-not ($Package -and $Package.Count -gt 0)) {
   }
 }
 
+
+# Track if any modifications occurred during apply phase
+$applyStateWasModified = $false
 
 foreach ($pkg in $selectedPackages) {
   if (-not $packagesMap.ContainsKey($pkg)) {
@@ -1814,6 +1837,7 @@ foreach ($pkg in $selectedPackages) {
 
   # Cleanup managed destinations removed from this package
   $links = Get-StatePackageLinks -Name $pkg
+  $packageWasModified = $false
 
   $propNames = Get-StateLinkEntries -LinksObject $links
 
@@ -1827,6 +1851,7 @@ foreach ($pkg in $selectedPackages) {
         # seed is intentionally untracked; drop any stale tracked state entry.
         Write-LogLine -Tag "untrack" -Message ("{0} (seed mode)" -f $toKey) -Color Cyan -Indent 2
         $links.PSObject.Properties.Remove($toKey)
+        $packageWasModified = $true
       }
       continue
     }
@@ -1835,10 +1860,12 @@ foreach ($pkg in $selectedPackages) {
     $removeStateEntry = Invoke-TrackedEntryCleanup -StateEntry $old -UseTrash $useTrash -TrashDir $trashDir
     if ($removeStateEntry) {
       $links.PSObject.Properties.Remove($toKey)
+      $packageWasModified = $true
     }
   }
 
   # Apply desired
+  
   foreach ($toKey in $desired.Keys) {
     $it = $desired[$toKey]
     $mode = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
@@ -1850,7 +1877,9 @@ foreach ($pkg in $selectedPackages) {
 
       if ($mode -eq "sync") {
         if (Invoke-SyncHashMode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir) {
-          Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+          if (Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode) {
+            $packageWasModified = $true
+          }
         }
         continue
       }
@@ -1876,11 +1905,14 @@ foreach ($pkg in $selectedPackages) {
       $needsCreate = [bool]$decision.NeedsCreate
 
       if (-not $needsCreate) {
-        Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode
+        if (Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode) {
+          $packageWasModified = $true
+        }
         continue
       }
 
       Invoke-CreateTrackedLinkForMode -Mode $mode -SourcePath $from -DestinationPath $to -ToKey $toKey -LinksObject $links -DesiredItem $it
+      $packageWasModified = $true
     }
     catch {
       $errMsg = $_.Exception.Message
@@ -1889,15 +1921,20 @@ foreach ($pkg in $selectedPackages) {
     }
   }
 
-  # Stamp package updated time
-  $pkgState = Get-StatePackage -Name $pkg
-  $pkgState.updated = (Get-Date).ToString("o")
+  # Stamp package updated time only if changes occurred
+  if ($packageWasModified) {
+    $pkgState = Get-StatePackage -Name $pkg
+    $pkgState.updated = (Get-Date).ToString("o")
+    $applyStateWasModified = $true
+  }
 }
 
 
 # ---------------- Save state ----------------
 
-$state.updated = (Get-Date).ToString("o")
+if ($applyStateWasModified -or $unlinkStateWasModified) {
+  $state.updated = (Get-Date).ToString("o")
+}
 $state.config = $configFull
 $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $statePath -Encoding UTF8
 Write-Host ""
