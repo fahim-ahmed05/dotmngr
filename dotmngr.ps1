@@ -30,6 +30,7 @@ Modes:
   shortcut  - Windows .lnk shortcut (file/dir)
 Switches:
   -Unlink   Remove all managed links for the selected packages
+  -Relink   Unlink then re-link the selected packages
   -Status   Show a table of all tracked items and whether they are intact
   -Force    Recreate each managed destination regardless of current state
 #>
@@ -40,11 +41,14 @@ param(
   [ValidateNotNullOrEmpty()]
   [string]$ConfigPath,
 
-  [Parameter()]
+  [Parameter(ValueFromRemainingArguments=$true)]
   [string[]]$Package,
 
   [Parameter()]
   [switch]$Unlink,
+
+  [Parameter()]
+  [switch]$Relink,
 
   [Parameter()]
   [switch]$Status,
@@ -659,7 +663,7 @@ $stateDir = Join-Path $userProfile ".config\dotmngr"
 New-DirectoryIfMissing -Path $stateDir
 
 $configFull = (Resolve-Path -LiteralPath $ConfigPath).Path
-$configBase = Split-Path -LeafBase $configFull
+$configBase = [System.IO.Path]::GetFileNameWithoutExtension($configFull)
 $statePath  = Join-Path $stateDir ("state.{0}.json" -f $configBase)
 
 $state = [pscustomobject]@{
@@ -1186,9 +1190,9 @@ if ($Status) {
   return
 }
 
-# ---------------- Unlink mode ----------------
+# ---------------- Unlink / Relink mode ----------------
 
-if ($Unlink) {
+if ($Unlink -or $Relink) {
   $unlinkPkgs = @()
   if ($Package -and $Package.Count -gt 0) {
     $unlinkPkgs = @($Package)
@@ -1201,11 +1205,13 @@ if ($Unlink) {
 
   foreach ($pkg in $unlinkPkgs) {
     if (-not $state.packages.PSObject.Properties[$pkg]) {
-      Write-LogLine -Tag "unlink" -Message ("{0} (no state)" -f $pkg) -Color Yellow
+      $tag = if ($Relink) { "relink" } else { "unlink" }
+      Write-LogLine -Tag $tag -Message ("{0} (no state)" -f $pkg) -Color Yellow
       continue
     }
 
-    Write-LogLine -Tag "unlink" -Message $pkg -Color Cyan
+    $tag = if ($Relink) { "relink" } else { "unlink" }
+    Write-LogLine -Tag $tag -Message $pkg -Color Cyan
     $links = Get-StatePackageLinks -Name $pkg
 
     $toKeys = Get-StateLinkEntries -LinksObject $links
@@ -1227,7 +1233,10 @@ if ($Unlink) {
   $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $statePath -Encoding UTF8
   Write-Host ""
   Write-LogLine -Tag "save" -Message ("state saved: {0}" -f $statePath) -Color Green
-  return
+
+  if ($Unlink) {
+    return
+  }
 }
 
 # ---------------- Apply mode ----------------

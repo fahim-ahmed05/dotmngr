@@ -50,7 +50,13 @@ When `enabled` is switched from `true` to `false`, a normal apply run treats tha
 ### Apply specific packages
 
 ```powershell
-.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Package nvim,git
+.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Package nvim pwsh
+```
+
+Alternatively, you can omit the `-Package` flag name:
+
+```powershell
+.\dotmngr.ps1 -ConfigPath .\dotlinks.json nvim pwsh
 ```
 
 > This runs even if `enabled: false`.
@@ -69,12 +75,20 @@ You can combine it with package selection:
 .\dotmngr.ps1 -ConfigPath .\dotlinks.json -Package nvim -Force
 ```
 
+### Relink packages
+
+Unlinks the packages (performing a full state cleanup) and then reapplies them. Useful when you've made major changes to paths:
+
+```powershell
+.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Relink nvim pwsh
+```
+
 ### Unlink packages
 
 Removes managed links for selected packages:
 
 ```powershell
-.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Package nvim -Unlink
+.\dotmngr.ps1 -ConfigPath .\dotlinks.json -Package nvim pwsh -Unlink
 ```
 
 ### Unlink everything
