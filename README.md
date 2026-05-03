@@ -188,9 +188,10 @@ Each package:
 ```json
 "packageName": {
   "enabled": true,
+  "admin": false,
   "mode": "junction",
   "items": [
-    { "from": "...", "to": "...", "mode": "..." }
+    { "from": "...", "to": "...", "mode": "...", "admin": false }
   ]
 }
 ```
@@ -200,8 +201,11 @@ Each package:
 | Field     | Required | Description             |
 | --------- | -------- | ----------------------- |
 | `enabled` | No       | Defaults to `true`      |
+| `admin`   | No       | Defaults to `false`; requests elevated creation for the package |
 | `mode`    | No       | Overrides `global.mode` |
 | `items`   | Yes      | Array of mappings       |
+
+Item-level `admin` (if present) overrides package-level `admin` for that item.
 
 
 ### Mode Resolution Order
@@ -309,6 +313,38 @@ For transfer modes:
 * `sync` compares hashes, picks the newer side, and updates only the changed files; overwritten files go to trash
 * `seed` does nothing if `to` exists
 
+## Admin Elevation
+
+You can mark a package or item with `"admin": true` when the destination needs elevated permissions (for example, under `Program Files`).
+
+Behavior:
+
+* Admin-required creations are batched into one elevated run, so you get one UAC prompt per package apply pass
+* Non-admin items are still processed normally
+* State is updated only for elevated items that report successful creation
+
+Example:
+
+```json
+"firefox": {
+  "enabled": true,
+  "admin": true,
+  "items": [
+    {
+      "mode": "hardlink",
+      "from": "%USERPROFILE%\\gitpkg\\dotfiles\\browser\\firefox\\policies.json",
+      "to": "C:\\Program Files\\Mozilla Firefox\\distribution\\policies.json"
+    },
+    {
+      "mode": "hardlink",
+      "admin": false,
+      "from": "%USERPROFILE%\\gitpkg\\dotfiles\\browser\\firefox\\user.js",
+      "to": "%APPDATA%\\Mozilla\\Firefox\\Profiles\\profile.default\\user.js"
+    }
+  ]
+}
+```
+
 
 ## State file behavior
 
@@ -322,6 +358,14 @@ Example:
 * State: `~\.config\dotmngr\state.dotlinks.json`
 
 When you remove an item from your config, dotmngr will attempt to remove the old destination **only if** it still matches what dotmngr previously created. This prevents accidental deletion if you manually replaced that destination with something else.
+
+In `-Unlink` and `-Relink`, dotmngr removes tracked file entries before tracked container links (such as junctions). This avoids child entries becoming unreachable because their parent container link was removed first.
+
+If you still see:
+
+* `not removing (destination no longer matches managed link)`
+
+it means the current destination no longer matches the tracked source/mode from state, so dotmngr intentionally leaves it in place for safety.
 
 ## Tips
 
