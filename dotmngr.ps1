@@ -1347,20 +1347,20 @@ function New-ItemSafe {
   try {
     `$parent = [System.IO.Path]::GetDirectoryName(`$Path)
     if (`$parent -and -not (Test-Path -LiteralPath `$parent)) {
-      New-Item -ItemType Directory -Path `$parent -Force -ErrorAction Stop > $null
+      [void](New-Item -ItemType Directory -Path `$parent -Force -ErrorAction Stop)
     }
 
     switch ((`$Mode).ToLower()) {
-      'hardlink' { New-Item -ItemType HardLink -Path `$Path -Target `$Target -Force -ErrorAction Stop > $null }
-      'junction' { New-Item -ItemType Junction -Path `$Path -Target `$Target -Force -ErrorAction Stop > $null }
-      'symlink' { New-Item -ItemType SymbolicLink -Path `$Path -Target `$Target -Force -ErrorAction Stop > $null }
+      'hardlink' { [void](New-Item -ItemType HardLink -Path `$Path -Target `$Target -Force -ErrorAction Stop) }
+      'junction' { [void](New-Item -ItemType Junction -Path `$Path -Target `$Target -Force -ErrorAction Stop) }
+      'symlink' { [void](New-Item -ItemType SymbolicLink -Path `$Path -Target `$Target -Force -ErrorAction Stop) }
       'shortcut' {
         `$wsh = New-Object -ComObject WScript.Shell
         `$sc = `$wsh.CreateShortcut(`$Path)
         `$sc.TargetPath = `$Target
         `$sc.Save()
       }
-      default { New-Item -ItemType `$Mode -Path `$Path -Target `$Target -Force -ErrorAction Stop > $null }
+      default { [void](New-Item -ItemType `$Mode -Path `$Path -Target `$Target -Force -ErrorAction Stop) }
     }
 
     return @{ success = `$true; error = `$null }
