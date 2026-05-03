@@ -262,6 +262,7 @@ Creates a Windows `.lnk` shortcut at `to` pointing to `from`.
 | `description`      | Tooltip text shown on the shortcut                   |
 | `iconLocation`     | Icon path, e.g. `"notepad.exe,0"` or `"app.exe,1"`  |
 | `windowStyle`      | `normal`, `minimized`, `maximized`, or a raw integer (`normal` = 1, `maximized` = 3, `minimized` = 7) |
+| `runAsAdmin`       | `true` or `false`. Modifies the `.lnk` binary to prompt for UAC when launched |
 
 **Example:**
 

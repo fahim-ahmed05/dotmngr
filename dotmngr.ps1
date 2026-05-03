@@ -185,7 +185,10 @@ function New-WindowsShortcut {
     [string]$IconLocation = "",
 
     [Parameter()]
-    [int]$WindowStyle = 1
+    [int]$WindowStyle = 1,
+
+    [Parameter()]
+    [bool]$RunAsAdmin = $false
   )
 
   $wsh = New-Object -ComObject WScript.Shell
@@ -197,6 +200,16 @@ function New-WindowsShortcut {
   if ($Description) { $sc.Description = $Description }
   if ($IconLocation) { $sc.IconLocation = $IconLocation }
   $sc.Save()
+
+  if ($RunAsAdmin -and (Test-Path -LiteralPath $Path)) {
+    try {
+      $bytes = [System.IO.File]::ReadAllBytes($Path)
+      $bytes[0x15] = $bytes[0x15] -bor 0x20
+      [System.IO.File]::WriteAllBytes($Path, $bytes)
+    } catch {
+      Write-Warning "Failed to set RunAsAdmin flag on shortcut: $_"
+    }
+  }
 }
 
 function Get-LinkTargetPath {
@@ -1154,6 +1167,8 @@ function Invoke-CreateTrackedLinkForMode {
       if ($scDesc) { $scParams.Description = $scDesc }
       if ($scIcon) { $scParams.IconLocation = [System.Environment]::ExpandEnvironmentVariables($scIcon) }
       if ($null -ne $scWinStyle) { $scParams.WindowStyle = Resolve-WindowStyle $scWinStyle }
+      $scRunAsAdmin = $DesiredItem.PSObject.Properties['runAsAdmin']?.Value
+      if ($null -ne $scRunAsAdmin) { $scParams.RunAsAdmin = [bool]$scRunAsAdmin }
       New-WindowsShortcut @scParams
       Write-LogLine -Tag "create" -Message "shortcut created." -Color Green -Indent 4
       Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode > $null
@@ -1324,10 +1339,11 @@ function Invoke-AdminElevatedLinks {
     $payloadItems = [System.Collections.Generic.List[pscustomobject]]::new()
     foreach ($item in $AdminDesiredItems) {
       $payloadItems.Add([pscustomobject]@{
-        toKey = $item.toKey
-        mode  = $item.mode
-        from  = $item.from
-        to    = $item.to
+        toKey      = $item.toKey
+        mode       = $item.mode
+        from       = $item.from
+        to         = $item.to
+        runAsAdmin = $item.PSObject.Properties['runAsAdmin']?.Value
       })
     }
 
@@ -1343,7 +1359,7 @@ function Invoke-AdminElevatedLinks {
 `$results = @{}
 
 function New-ItemSafe {
-  param([string]`$Mode, [string]`$Path, [string]`$Target)
+  param([string]`$Mode, [string]`$Path, [string]`$Target, [bool]`$RunAsAdmin)
   try {
     `$parent = [System.IO.Path]::GetDirectoryName(`$Path)
     if (`$parent -and -not (Test-Path -LiteralPath `$parent)) {
@@ -1359,6 +1375,12 @@ function New-ItemSafe {
         `$sc = `$wsh.CreateShortcut(`$Path)
         `$sc.TargetPath = `$Target
         `$sc.Save()
+        
+        if (`$RunAsAdmin -and (Test-Path -LiteralPath `$Path)) {
+          `$bytes = [System.IO.File]::ReadAllBytes(`$Path)
+          `$bytes[0x15] = `$bytes[0x15] -bor 0x20
+          [System.IO.File]::WriteAllBytes(`$Path, `$bytes)
+        }
       }
       default { [void](New-Item -ItemType `$Mode -Path `$Path -Target `$Target -Force -ErrorAction Stop) }
     }
@@ -1372,7 +1394,9 @@ function New-ItemSafe {
 
 `$items = @(ConvertFrom-Json -InputObject (Get-Content -LiteralPath `$payloadFile -Raw))
 foreach (`$item in `$items) {
-  `$results[`$item.toKey] = New-ItemSafe -Mode `$item.mode -Path `$item.to -Target `$item.from
+  `$scRunAsAdmin = `$item.PSObject.Properties['runAsAdmin']?.Value
+  `$isAdmin = if (`$null -ne `$scRunAsAdmin) { [bool]`$scRunAsAdmin } else { `$false }
+  `$results[`$item.toKey] = New-ItemSafe -Mode `$item.mode -Path `$item.to -Target `$item.from -RunAsAdmin `$isAdmin
 }
 
 Set-Content -LiteralPath `$tempResultFile -Value (ConvertTo-Json -InputObject `$results -Depth 10) -Encoding UTF8
@@ -1605,6 +1629,9 @@ foreach ($pkg in $selectedPackages) {
       if ($null -ne $scDesc) { $desiredEntry | Add-Member -MemberType NoteProperty -Name description      -Value ([string]$scDesc) }
       if ($null -ne $scIcon) { $desiredEntry | Add-Member -MemberType NoteProperty -Name iconLocation     -Value ([string]$scIcon) }
       if ($null -ne $scWinStyle) { $desiredEntry | Add-Member -MemberType NoteProperty -Name windowStyle      -Value (Resolve-WindowStyle $scWinStyle) }
+      
+      $scRunAsAdmin = $it.PSObject.Properties['runAsAdmin']?.Value
+      if ($null -ne $scRunAsAdmin) { $desiredEntry | Add-Member -MemberType NoteProperty -Name runAsAdmin     -Value ([bool]$scRunAsAdmin) }
     }
     $desired[$toExpanded] = $desiredEntry
   }
