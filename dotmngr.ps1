@@ -26,7 +26,6 @@ Modes:
   symlink   - Symbolic link (file/dir)
   junction  - Junction (dir)
   hardlink  - Hard link (file, same volume)
-  seed      - Copy only if destination doesn’t exist (file/dir)
   sync      - Copy newer side to older side by modified time (file/dir)
   shortcut  - Windows .lnk shortcut (file/dir)
 Switches:
@@ -786,8 +785,6 @@ function Test-ShouldRemoveManagedLink {
   if ($mode -eq "sync") {
     return $false
   }
-
-  # We do not auto-remove seed destinations.
   return $false
 }
 
@@ -845,7 +842,7 @@ function Get-TrackedItemStatus {
       return "DRIFTED"
     }
     default {
-      # For seed and unknown modes, existence is the best available signal.
+      # For unknown modes, existence is the best available signal.
       return "OK"
     }
   }
@@ -1233,38 +1230,7 @@ function Set-TrackedLinkState {
   return $true
 }
 
-function Invoke-SeedApplyIfNeeded {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$Mode,
 
-    [Parameter(Mandatory = $true)]
-    [string]$SourcePath,
-
-    [Parameter(Mandatory = $true)]
-    [string]$DestinationPath
-  )
-
-  if ($Mode -ne "seed") { return $false }
-
-  if (Test-Path -LiteralPath $DestinationPath) {
-    Write-LogLine -Tag "skip" -Message "destination exists, skipping (seed)." -Color Green -Indent 4
-    return $true
-  }
-
-  if (Test-Path -LiteralPath $SourcePath -PathType Container) {
-    New-DirectoryIfMissing -Path $DestinationPath
-    Invoke-RobocopySafe -Source $SourcePath -Destination $DestinationPath -Arguments @("/E", "/R:1", "/W:1", "/NFL", "/NDL")
-    Write-LogLine -Tag "create" -Message "directory copied once." -Color Green -Indent 4
-  }
-  else {
-    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
-    Write-LogLine -Tag "create" -Message "file copied once." -Color Green -Indent 4
-  }
-
-  return $true
-}
 
 function Copy-PathByHash {
   [CmdletBinding()]
@@ -1483,7 +1449,7 @@ function Get-ApplyDestinationDecision {
     return $result
   }
 
-  throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, seed, shortcut)"
+  throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, shortcut)"
 }
 
 function Invoke-CreateTrackedLinkForMode {
@@ -1544,7 +1510,7 @@ function Invoke-CreateTrackedLinkForMode {
       Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
     }
     default {
-      throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, seed, shortcut)"
+      throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, shortcut)"
     }
   }
 }
@@ -2006,12 +1972,6 @@ foreach ($pkg in $selectedPackages) {
       $desiredModeVal = $desired[$toKey] | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
       $desiredMode = if ($desiredModeVal) { ([string]$desiredModeVal).ToLower() } else { "" }
 
-      if ($desiredMode -eq "seed") {
-        # seed is intentionally untracked; drop any stale tracked state entry.
-        Write-LogLine -Tag "untrack" -Message ("{0} (seed mode)" -f $toKey) -Color Cyan -Indent 2
-        $links.PSObject.Properties.Remove($toKey)
-        $packageWasModified = $true
-      }
       continue
     }
 
@@ -2071,9 +2031,7 @@ foreach ($pkg in $selectedPackages) {
           }
         }
 
-        if (Invoke-SeedApplyIfNeeded -Mode $mode -SourcePath $from -DestinationPath $to) {
-          continue
-        }
+        # seed mode removed; no per-item seed handling
 
         # Pre-flight decision
         $decision = Get-ApplyDestinationDecision -Mode $mode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir
@@ -2142,9 +2100,7 @@ foreach ($pkg in $selectedPackages) {
         }
       }
 
-      if (Invoke-SeedApplyIfNeeded -Mode $mode -SourcePath $from -DestinationPath $to) {
-        continue
-      }
+      # seed mode removed; no per-item seed handling
 
       # Link modes (tracked)
       $decision = Get-ApplyDestinationDecision -Mode $mode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir
