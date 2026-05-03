@@ -1704,34 +1704,58 @@ function Invoke-AdminElevatedLinks {
   try {
     # Generate temp script file with admin link creation commands
     $tempScript = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "dotmngr_admin_$(Get-Random).ps1")
-    
+
     $scriptContent = @"
 param([string]`$TempResultFile)
 
 `$results = @{}
 
 function New-ItemSafe {
-  param([string]`$ItemType, [string]`$Path, [string]`$Target)
+  param([string]`$Mode, [string]`$Path, [string]`$Target)
   try {
-    New-Item -ItemType `$ItemType -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null
-    return @{success=`$true; error=`$null}
-  } catch {
-    return @{success=`$false; error=`$_.Exception.Message}
+    # Ensure parent directory exists (create if missing)
+    `$parent = [System.IO.Path]::GetDirectoryName(`$Path)
+    if (`$parent -and -not (Test-Path -LiteralPath `$parent)) {
+      New-Item -ItemType Directory -Path `$parent -Force -ErrorAction Stop | Out-Null
+    }
+
+    switch ((`$Mode).ToLower()) {
+      'hardlink' { New-Item -ItemType HardLink -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
+      'junction' { New-Item -ItemType Junction -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
+      'symlink'  { New-Item -ItemType SymbolicLink -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
+      'shortcut' {
+        try {
+          `$wsh = New-Object -ComObject WScript.Shell
+          `$sc = `$wsh.CreateShortcut(`$Path)
+          `$sc.TargetPath = `$Target
+          `$sc.Save()
+        } catch {
+          throw
+        }
+      }
+      default { New-Item -ItemType `$Mode -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
+    }
+
+    return @{ success = `$true; error = `$null }
+  }
+  catch {
+    return @{ success = `$false; error = `$_.Exception.Message }
   }
 }
 
 `$items = @(
 "@
-    
+
     foreach ($item in $AdminDesiredItems) {
       $mode = $item.mode
       $from = $item.from
       $to = $item.to
       $toKey = $item.toKey
-      
+
+      # quote values safely
       $scriptContent += "`n  @{toKey='$toKey'; mode='$mode'; from='$from'; to='$to'},"
     }
-    
+
     $scriptContent += @"
 
 )
@@ -1741,8 +1765,8 @@ foreach (`$item in `$items) {
   `$from = `$item.from
   `$to = `$item.to
   `$toKey = `$item.toKey
-  
-  `$result = New-ItemSafe -ItemType `$mode -Path `$to -Target `$from
+
+  `$result = New-ItemSafe -Mode `$mode -Path `$to -Target `$from
   `$results[`$toKey] = `$result
 }
 
@@ -1750,10 +1774,10 @@ foreach (`$item in `$items) {
 "@
 
     $scriptContent | Set-Content -LiteralPath $tempScript -Encoding UTF8
-    
+
     # Create temp result file path
     $tempResultFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "dotmngr_admin_result_$(Get-Random).json")
-    
+
     # Elevate and run script
     Write-LogLine -Tag "admin" -Message "requesting admin permission..." -Color Yellow
     $proc = Start-Process -FilePath "pwsh" -ArgumentList @(
@@ -1780,7 +1804,7 @@ foreach (`$item in `$items) {
     foreach ($toKey in $results.PSObject.Properties.Name) {
       $result = $results.$toKey
       $item = $AdminDesiredItems | Where-Object { $_.toKey -eq $toKey } | Select-Object -First 1
-      
+
       if ($result.success) {
         Write-LogLine -Tag "create" -Message ("{0} created (elevated)." -f $item.mode) -Color Green -Indent 4
         Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $toKey -SourcePath $item.from -Mode $item.mode | Out-Null
@@ -1949,7 +1973,9 @@ foreach ($pkg in $selectedPackages) {
       }
     }
 
-    $desiredEntry = [pscustomobject]@{ to = $toExpanded; from = $fromResolved; mode = $mode }
+    $itemAdmin = $it | Select-Object -ExpandProperty admin -ErrorAction SilentlyContinue
+    if ($null -eq $itemAdmin) { $itemAdmin = $pkgObj | Select-Object -ExpandProperty admin -ErrorAction SilentlyContinue }
+    $desiredEntry = [pscustomobject]@{ to = $toExpanded; from = $fromResolved; mode = $mode; admin = [bool]$itemAdmin }
     if ($mode -eq "shortcut") {
       $scWorkDir = $it | Select-Object -ExpandProperty workingDirectory -ErrorAction SilentlyContinue
       $scArgs = $it | Select-Object -ExpandProperty arguments        -ErrorAction SilentlyContinue
@@ -2010,7 +2036,81 @@ foreach ($pkg in $selectedPackages) {
     }
   }
 
-  # Process regular items first
+  # Process admin items first (elevated batch)
+  if ($adminItems.Count -gt 0) {
+    $adminDesired = @()
+
+    foreach ($entry in $adminItems) {
+      $toKey = $entry.toKey
+      $it = $entry.item
+      $mode = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
+      $from = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
+      $to = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
+
+      try {
+        Write-ItemHeader -Mode $mode -From $from -To $to
+
+        if ($mode -eq "sync") {
+          if (Invoke-SyncHashMode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir) {
+            if (Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode) {
+              $packageWasModified = $true
+            }
+          }
+          continue
+        }
+
+        # Don't create parent directories here; elevation will handle creation where needed.
+
+        if ($Force -and (Test-Path -LiteralPath $to)) {
+          Write-LogLine -Tag "replace" -Message "removing destination before apply." -Color Yellow -Indent 4
+          if (-not (Test-ReplaceDestinationRemoval -DestinationPath $to -ManagedMode $mode -ManagedSource $from -UseTrash $useTrash -TrashDir $trashDir)) {
+            continue
+          }
+        }
+
+        if (Invoke-SeedApplyIfNeeded -Mode $mode -SourcePath $from -DestinationPath $to) {
+          continue
+        }
+
+        # Pre-flight decision
+        $decision = Get-ApplyDestinationDecision -Mode $mode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir
+        if (-not $decision.Proceed) {
+          Write-LogLine -Tag "skip" -Message "skipped (pre-flight check failed)." -Color Yellow -Indent 4
+          continue
+        }
+
+        $needsCreate = [bool]$decision.NeedsCreate
+        if (-not $needsCreate) {
+          if (Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode) {
+            $packageWasModified = $true
+          }
+          continue
+        }
+
+        # Queue for elevated creation
+        $adminDesired += @{
+          toKey = $toKey
+          mode  = $mode
+          from  = $from
+          to    = $to
+        }
+      }
+      catch {
+        $errMsg = $_.Exception.Message
+        Write-LogLine -Tag "error" -Message ("failed to preflight admin item (mode={0}): {1}" -f $mode, $errMsg) -Color Red -Indent 4
+        continue
+      }
+    }
+
+    if ($adminDesired.Count -gt 0) {
+      $adminSuccess = Invoke-AdminElevatedLinks -AdminDesiredItems $adminDesired -UseTrash $useTrash -TrashDir $trashDir -LinksObject $links
+      if ($adminSuccess) {
+        $packageWasModified = $true
+      }
+    }
+  }
+
+  # Then process regular (non-admin) items
   foreach ($entry in $regularItems) {
     $toKey = $entry.toKey
     $it = $entry.item
@@ -2064,42 +2164,6 @@ foreach ($pkg in $selectedPackages) {
       $errMsg = $_.Exception.Message
       Write-LogLine -Tag "error" -Message ("failed to process item (mode={0}): {1}" -f $mode, $errMsg) -Color Red -Indent 4
       continue
-    }
-  }
-
-  # Process admin items via elevation (batch all together)
-  if ($adminItems.Count -gt 0) {
-    $adminDesired = @()
-    
-    foreach ($entry in $adminItems) {
-      $toKey = $entry.toKey
-      $it = $entry.item
-      $mode = $it | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
-      $from = $it | Select-Object -ExpandProperty from -ErrorAction SilentlyContinue
-      $to = $it | Select-Object -ExpandProperty to -ErrorAction SilentlyContinue
-
-      Write-ItemHeader -Mode $mode -From $from -To $to
-
-      # Pre-flight checks (same as regular items)
-      $decision = Get-ApplyDestinationDecision -Mode $mode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir
-      if (-not $decision.Proceed) {
-        Write-LogLine -Tag "skip" -Message "skipped (pre-flight check failed)." -Color Yellow -Indent 4
-        continue
-      }
-
-      $adminDesired += @{
-        toKey = $toKey
-        mode  = $mode
-        from  = $from
-        to    = $to
-      }
-    }
-
-    if ($adminDesired.Count -gt 0) {
-      $adminSuccess = Invoke-AdminElevatedLinks -AdminDesiredItems $adminDesired -UseTrash $useTrash -TrashDir $trashDir -LinksObject $links
-      if ($adminSuccess) {
-        $packageWasModified = $true
-      }
     }
   }
 
