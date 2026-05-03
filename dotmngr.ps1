@@ -1804,6 +1804,10 @@ foreach (`$item in `$items) {
   }
 }
 
+# Initialize state modification trackers (used in both unlink and apply modes)
+$unlinkStateWasModified = $false
+$applyStateWasModified = $false
+
 # ---------------- Unlink / Relink mode ----------------
 
 if ($Unlink -or $Relink) {
@@ -1818,8 +1822,6 @@ if ($Unlink -or $Relink) {
     }
   }
 
-  $unlinkStateWasModified = $false
-  
   foreach ($pkg in $unlinkPkgs) {
     if (-not $state.packages.PSObject.Properties[$pkg]) {
       $tag = if ($Relink) { "relink" } else { "unlink" }
@@ -1882,9 +1884,6 @@ if (-not ($Package -and $Package.Count -gt 0)) {
   }
 }
 
-
-# Track if any modifications occurred during apply phase
-$applyStateWasModified = $false
 
 foreach ($pkg in $selectedPackages) {
   if (-not $packagesMap.ContainsKey($pkg)) {
