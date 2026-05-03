@@ -1700,20 +1700,36 @@ function Invoke-AdminElevatedLinks {
   Write-Host ""
   Write-LogLine -Tag "admin" -Message ("batching {0} admin items for elevated execution..." -f $AdminDesiredItems.Count) -Color Cyan
 
-  $tempScript = $null
+  $tempPayloadFile = $null
+  $tempResultFile = $null
   try {
-    # Generate temp script file with admin link creation commands
-    $tempScript = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "dotmngr_admin_$(Get-Random).ps1")
+    $tempPayloadFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "dotmngr_admin_payload_$(Get-Random).json")
+    $tempResultFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "dotmngr_admin_result_$(Get-Random).json")
 
-    $scriptContent = @"
-param([string]`$TempResultFile)
+    $payloadItems = @()
+    foreach ($item in $AdminDesiredItems) {
+      $payloadItems += [pscustomobject]@{
+        toKey = $item.toKey
+        mode  = $item.mode
+        from  = $item.from
+        to    = $item.to
+      }
+    }
+
+    $payloadItems | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $tempPayloadFile -Encoding UTF8
+
+    $escapedPayloadFile = $tempPayloadFile.Replace("'", "''")
+    $escapedResultFile = $tempResultFile.Replace("'", "''")
+
+    $launcherScript = @"
+`$payloadFile = '$escapedPayloadFile'
+`$tempResultFile = '$escapedResultFile'
 
 `$results = @{}
 
 function New-ItemSafe {
   param([string]`$Mode, [string]`$Path, [string]`$Target)
   try {
-    # Ensure parent directory exists (create if missing)
     `$parent = [System.IO.Path]::GetDirectoryName(`$Path)
     if (`$parent -and -not (Test-Path -LiteralPath `$parent)) {
       New-Item -ItemType Directory -Path `$parent -Force -ErrorAction Stop | Out-Null
@@ -1722,16 +1738,12 @@ function New-ItemSafe {
     switch ((`$Mode).ToLower()) {
       'hardlink' { New-Item -ItemType HardLink -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
       'junction' { New-Item -ItemType Junction -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
-      'symlink'  { New-Item -ItemType SymbolicLink -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
+      'symlink' { New-Item -ItemType SymbolicLink -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
       'shortcut' {
-        try {
-          `$wsh = New-Object -ComObject WScript.Shell
-          `$sc = `$wsh.CreateShortcut(`$Path)
-          `$sc.TargetPath = `$Target
-          `$sc.Save()
-        } catch {
-          throw
-        }
+        `$wsh = New-Object -ComObject WScript.Shell
+        `$sc = `$wsh.CreateShortcut(`$Path)
+        `$sc.TargetPath = `$Target
+        `$sc.Save()
       }
       default { New-Item -ItemType `$Mode -Path `$Path -Target `$Target -Force -ErrorAction Stop | Out-Null }
     }
@@ -1743,48 +1755,22 @@ function New-ItemSafe {
   }
 }
 
-`$items = @(
-"@
-
-    foreach ($item in $AdminDesiredItems) {
-      $mode = $item.mode
-      $from = $item.from
-      $to = $item.to
-      $toKey = $item.toKey
-
-      # quote values safely
-      $scriptContent += "`n  @{toKey='$toKey'; mode='$mode'; from='$from'; to='$to'},"
-    }
-
-    $scriptContent += @"
-
-)
-
+`$items = @(Get-Content -LiteralPath `$payloadFile -Raw | ConvertFrom-Json)
 foreach (`$item in `$items) {
-  `$mode = `$item.mode
-  `$from = `$item.from
-  `$to = `$item.to
-  `$toKey = `$item.toKey
-
-  `$result = New-ItemSafe -Mode `$mode -Path `$to -Target `$from
-  `$results[`$toKey] = `$result
+  `$results[`$item.toKey] = New-ItemSafe -Mode `$item.mode -Path `$item.to -Target `$item.from
 }
 
-`$results | ConvertTo-Json | Out-File -LiteralPath `$TempResultFile -Encoding UTF8
+`$results | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath `$tempResultFile -Encoding UTF8
 "@
 
-    $scriptContent | Set-Content -LiteralPath $tempScript -Encoding UTF8
-
-    # Create temp result file path
-    $tempResultFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "dotmngr_admin_result_$(Get-Random).json")
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcherScript))
 
     # Elevate and run script
     Write-LogLine -Tag "admin" -Message "requesting admin permission..." -Color Yellow
     $proc = Start-Process -FilePath "pwsh" -ArgumentList @(
       "-NoProfile",
       "-ExecutionPolicy", "Bypass",
-      "-File", $tempScript,
-      "-TempResultFile", $tempResultFile
+      "-EncodedCommand", $encodedCommand
     ) -Verb RunAs -Wait -PassThru
 
     if ($proc.ExitCode -ne 0) {
@@ -1817,13 +1803,16 @@ foreach (`$item in `$items) {
 
     # Clean up result file
     Remove-Item -LiteralPath $tempResultFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $tempPayloadFile -Force -ErrorAction SilentlyContinue
 
     return $allSuccess
   }
   finally {
-    # Clean up temp script
-    if ($tempScript -and (Test-Path -LiteralPath $tempScript)) {
-      Remove-Item -LiteralPath $tempScript -Force -ErrorAction SilentlyContinue
+    if ($tempPayloadFile -and (Test-Path -LiteralPath $tempPayloadFile)) {
+      Remove-Item -LiteralPath $tempPayloadFile -Force -ErrorAction SilentlyContinue
+    }
+    if ($tempResultFile -and (Test-Path -LiteralPath $tempResultFile)) {
+      Remove-Item -LiteralPath $tempResultFile -Force -ErrorAction SilentlyContinue
     }
   }
 }
