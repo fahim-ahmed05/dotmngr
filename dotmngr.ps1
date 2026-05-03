@@ -210,17 +210,22 @@ function Get-LinkTargetPath {
   )
 
   if (!(Test-Path -LiteralPath $Path)) { return $null }
-  $item = Get-Item -LiteralPath $Path -Force
-
-  $t = $null
-  try { $t = $item.Target } catch { $t = $null }
-  if ($null -eq $t) {
-    $t = ($item | Select-Object -ExpandProperty Target -ErrorAction SilentlyContinue)
+  
+  try {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return $null }
+    
+    $target = $item.Target
+    if ($null -eq $target) { return $null }
+    
+    # Handle array of targets (edge case)
+    if ($target -is [System.Array]) { $target = $target[0] }
+    
+    return (Resolve-DotmngrPath -Path ([string]$target))
   }
-  if ($null -eq $t) { return $null }
-  if ($t -is [System.Array]) { $t = $t[0] }
-
-  return (Resolve-DotmngrPath -Path ([string]$t))
+  catch {
+    return $null
+  }
 }
 
 function Get-PathHashUtc {
@@ -362,7 +367,7 @@ function Get-PathTreeEntries {
   return $entries
 }
 
-function Remove-PathBeforeCopy {
+function Remove-DestinationForOverwrite {
   [CmdletBinding()]
   param(
     [Parameter(Mandatory = $true)]
@@ -378,45 +383,57 @@ function Remove-PathBeforeCopy {
 
   if (!(Test-Path -LiteralPath $Path)) { return $true }
 
+  # Handle reparse points (symlinks/junctions) - remove only the link, not the target
   if (Test-ReparsePoint -Path $Path) {
     try {
       if (Test-Path -LiteralPath $Path -PathType Container) {
-        cmd /c "rmdir `"$Path`"" | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-          throw "rmdir failed with exit code $LASTEXITCODE"
-        }
+        cmd /c "rmdir `"$Path`"" 2>$null
       }
       else {
         Remove-Item -LiteralPath $Path -Force
       }
-
-      Write-Host "    removed link/junction only." -ForegroundColor Yellow
+      Write-LogLine -Tag "remove" -Message "reparse point removed." -Color Yellow -Indent 4
       return $true
     }
     catch {
-      Write-LogLine -Tag "error" -Message ("failed to remove reparse point safely: {0}" -f $_.Exception.Message) -Color Red -Indent 4
+      Write-LogLine -Tag "error" -Message ("failed to remove reparse point: {0}" -f $_.Exception.Message) -Color Red -Indent 4
       return $false
     }
   }
 
+  # Handle regular files/dirs - try trash first, then recycle bin
   if ($UseTrash -and -not [string]::IsNullOrWhiteSpace($TrashDir)) {
     $moved = Move-ItemToTrashFolder -Path $Path -TrashDir $TrashDir
     if ($moved) {
-      Write-LogLine -Tag "backup" -Message "moved to trash: $moved" -Color Yellow -Indent 4
+      Write-LogLine -Tag "backup" -Message "moved to trash" -Color Yellow -Indent 4
       return $true
     }
-
-    Write-LogLine -Tag "error" -Message "could not move path to trash before overwrite, skipping." -Color Red -Indent 4
-    return $false
   }
 
   if (Move-ItemToRecycleBin -Path $Path) {
-    Write-Host "    moved to recycle bin." -ForegroundColor Yellow
+    Write-LogLine -Tag "backup" -Message "moved to recycle bin" -Color Yellow -Indent 4
     return $true
   }
 
-  Write-LogLine -Tag "error" -Message "could not remove path before overwrite, skipping." -Color Red -Indent 4
+  Write-LogLine -Tag "error" -Message "could not remove path, skipping." -Color Red -Indent 4
   return $false
+}
+
+function Remove-PathBeforeCopy {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Path,
+
+    [Parameter(Mandatory = $true)]
+    [bool]$UseTrash,
+
+    [Parameter()]
+    [string]$TrashDir = ""
+  )
+
+  return (Remove-DestinationForOverwrite -Path $Path -UseTrash $UseTrash -TrashDir $TrashDir)
 }
 
 function Invoke-SyncTreeIncremental {
@@ -440,39 +457,44 @@ function Invoke-SyncTreeIncremental {
   $sourceEntries = Get-PathTreeEntries -RootPath $SourceRoot
   $destinationRootExists = Test-Path -LiteralPath $DestinationRoot
 
+  # Create directory structure first
   foreach ($entry in $sourceEntries | Where-Object { $_.IsContainer -and $_.RelativePath -ne "." }) {
     $targetDir = Join-Path $DestinationRoot $entry.RelativePath
+    
     if (Test-Path -LiteralPath $targetDir -PathType Leaf) {
-      if (-not (Remove-PathBeforeCopy -Path $targetDir -UseTrash $UseTrash -TrashDir $TrashDir)) {
+      if (-not (Remove-DestinationForOverwrite -Path $targetDir -UseTrash $UseTrash -TrashDir $TrashDir)) {
         return $false
       }
     }
-
     New-DirectoryIfMissing -Path $targetDir
   }
 
+  # Sync files incrementally - copy only when missing or hash differs
   foreach ($entry in $sourceEntries | Where-Object { -not $_.IsContainer }) {
     $targetPath = Join-Path $DestinationRoot $entry.RelativePath
     $targetExists = Test-Path -LiteralPath $targetPath
 
+    # Type mismatch: destination is a directory, not a file
     if ($targetExists -and (Test-Path -LiteralPath $targetPath -PathType Container)) {
-      if (-not (Remove-PathBeforeCopy -Path $targetPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+      if (-not (Remove-DestinationForOverwrite -Path $targetPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
         return $false
       }
       $targetExists = $false
     }
 
+    # Skip if file exists and hash matches
     if ($targetExists) {
       $targetHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
       if ($targetHash -eq $entry.Hash) {
         continue
       }
-
-      if (-not (Remove-PathBeforeCopy -Path $targetPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+      # Hash mismatch: remove old and copy new
+      if (-not (Remove-DestinationForOverwrite -Path $targetPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
         return $false
       }
     }
 
+    # Copy missing or changed file
     New-ParentDirectoryIfMissing -Path $targetPath
     Copy-Item -LiteralPath $entry.FullPath -Destination $targetPath -Force
   }
@@ -586,6 +608,7 @@ function Remove-ManagedDestination {
 
   if (!(Test-Path -LiteralPath $Path)) { return $true }
 
+  # For hardlinks: safe removal only if it matches the source (not a copy)
   $managedModeText = ([string]$ManagedMode).ToLower()
   if (
     $managedModeText -eq "hardlink" -and
@@ -595,52 +618,37 @@ function Remove-ManagedDestination {
     $sourceResolved = if ([string]::IsNullOrWhiteSpace($ManagedSource)) { "" } else { Resolve-DotmngrPath -Path $ManagedSource }
     if ($sourceResolved -and (Test-HardlinkMatchesSource -Destination $Path -Source $sourceResolved)) {
       try {
-        Remove-Item -LiteralPath $Path -Force
-        Write-Host "    removed hardlink only." -ForegroundColor Yellow
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+        Write-LogLine -Tag "remove" -Message "hardlink removed." -Color Yellow -Indent 4
         return $true
       }
       catch {
-        Write-LogLine -Tag "error" -Message ("failed to remove hardlink safely: {0}" -f $_.Exception.Message) -Color Red -Indent 4
+        Write-LogLine -Tag "error" -Message ("failed to remove hardlink: {0}" -f $_.Exception.Message) -Color Red -Indent 4
         return $false
       }
     }
   }
 
+  # For reparse points (symlinks/junctions): remove only the link
   if (Test-ReparsePoint -Path $Path) {
     try {
       if (Test-Path -LiteralPath $Path -PathType Container) {
-        cmd /c "rmdir `"$Path`"" | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-          throw "rmdir failed with exit code $LASTEXITCODE"
-        }
+        cmd /c "rmdir `"$Path`"" 2>$null
       }
       else {
-        Remove-Item -LiteralPath $Path -Force
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
       }
-
-      Write-Host "    removed link/junction only." -ForegroundColor Yellow
+      Write-LogLine -Tag "remove" -Message "reparse point removed." -Color Yellow -Indent 4
       return $true
     }
     catch {
-      Write-LogLine -Tag "error" -Message ("failed to remove reparse point safely: {0}" -f $_.Exception.Message) -Color Red -Indent 4
+      Write-LogLine -Tag "error" -Message ("failed to remove reparse point: {0}" -f $_.Exception.Message) -Color Red -Indent 4
       return $false
     }
   }
 
-  if ($UseTrash -and -not [string]::IsNullOrWhiteSpace($TrashDir)) {
-    $moved = Move-ItemToTrashFolder -Path $Path -TrashDir $TrashDir
-    if ($moved) {
-      Write-Host "    moved to trash: $moved" -ForegroundColor Yellow
-      return $true
-    }
-  }
-
-  if (Move-ItemToRecycleBin -Path $Path) {
-    Write-Host "    sent to recycle bin." -ForegroundColor Yellow
-    return $true
-  }
-
-  return $false
+  # For regular files/dirs: use trash or recycle bin
+  return (Remove-DestinationForOverwrite -Path $Path -UseTrash $UseTrash -TrashDir $TrashDir)
 }
 
 function Move-DestinationToSourceIfMissing {
@@ -949,8 +957,16 @@ if ($globalTrash -and -not [string]::IsNullOrWhiteSpace($globalTrashDir)) {
   New-DirectoryIfMissing -Path $globalTrashDir
 }
 
-# ---------------- State file location ----------------
-
+# Normalize paths to remove trailing backslashes for consistent comparisons
+function Normalize-Path {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Path
+  )
+  return $Path.TrimEnd("\") 
+}
 $userProfile = [System.Environment]::GetFolderPath('UserProfile')
 $stateDir = Join-Path $userProfile ".config\dotmngr"
 New-DirectoryIfMissing -Path $stateDir
@@ -1271,59 +1287,27 @@ function Copy-PathByHash {
   $sourceIsContainer = Test-Path -LiteralPath $SourcePath -PathType Container
   $destinationExists = Test-Path -LiteralPath $DestinationPath
 
+  # Type mismatch validation
+  if ($destinationExists) {
+    $destIsContainer = Test-Path -LiteralPath $DestinationPath -PathType Container
+    if ($sourceIsContainer -ne $destIsContainer) {
+      $sourceType = if ($sourceIsContainer) { "directory" } else { "file" }
+      $destType = if ($destIsContainer) { "directory" } else { "file" }
+      throw "source is $sourceType but destination is $destType"
+    }
+
+    # Remove existing destination
+    if (-not (Remove-DestinationForOverwrite -Path $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
+      return $false
+    }
+  }
+
+  # Copy source to destination
   if ($sourceIsContainer) {
-    if ($destinationExists -and -not (Test-Path -LiteralPath $DestinationPath -PathType Container)) {
-      throw "destination exists as a file, cannot overwrite with a directory: $DestinationPath"
-    }
-
-    if ($destinationExists) {
-      if ($UseTrash -and -not [string]::IsNullOrWhiteSpace($TrashDir)) {
-        $moved = Move-ItemToTrashFolder -Path $DestinationPath -TrashDir $TrashDir
-        if ($moved) {
-          Write-LogLine -Tag "backup" -Message "moved to trash: $moved" -Color Yellow -Indent 4
-        }
-        else {
-          Write-LogLine -Tag "error" -Message "could not move destination to trash before overwrite, skipping." -Color Red -Indent 4
-          return $false
-        }
-      }
-      elseif (Move-ItemToRecycleBin -Path $DestinationPath) {
-        Write-Host "    moved to recycle bin." -ForegroundColor Yellow
-      }
-      else {
-        Write-LogLine -Tag "error" -Message "could not remove destination before overwrite, skipping." -Color Red -Indent 4
-        return $false
-      }
-    }
-
     New-DirectoryIfMissing -Path $DestinationPath
     Invoke-RobocopySafe -Source $SourcePath -Destination $DestinationPath -Arguments @("/E", "/R:1", "/W:1", "/NFL", "/NDL")
   }
   else {
-    if ($destinationExists -and (Test-Path -LiteralPath $DestinationPath -PathType Container)) {
-      throw "destination exists as a directory, cannot overwrite with a file: $DestinationPath"
-    }
-
-    if ($destinationExists) {
-      if ($UseTrash -and -not [string]::IsNullOrWhiteSpace($TrashDir)) {
-        $moved = Move-ItemToTrashFolder -Path $DestinationPath -TrashDir $TrashDir
-        if ($moved) {
-          Write-LogLine -Tag "backup" -Message "moved to trash: $moved" -Color Yellow -Indent 4
-        }
-        else {
-          Write-LogLine -Tag "error" -Message "could not move destination to trash before overwrite, skipping." -Color Red -Indent 4
-          return $false
-        }
-      }
-      elseif (Move-ItemToRecycleBin -Path $DestinationPath) {
-        Write-Host "    moved to recycle bin." -ForegroundColor Yellow
-      }
-      else {
-        Write-LogLine -Tag "error" -Message "could not remove destination before overwrite, skipping." -Color Red -Indent 4
-        return $false
-      }
-    }
-
     New-ParentDirectoryIfMissing -Path $DestinationPath
     Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
   }
@@ -1529,19 +1513,19 @@ function Invoke-CreateTrackedLinkForMode {
       if (Test-Path -LiteralPath $SourcePath -PathType Container) {
         throw "hardlink mode only supports files: $SourcePath"
       }
-      New-Item -ItemType HardLink -Path $DestinationPath -Target $SourcePath | Out-Null
+      New-Item -ItemType HardLink -Path $DestinationPath -Target $SourcePath -ErrorAction Stop | Out-Null
       Write-LogLine -Tag "create" -Message "hardlink created." -Color Green -Indent 4
-      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode
+      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
     }
     "symlink" {
-      New-Item -ItemType SymbolicLink -Path $DestinationPath -Target $SourcePath | Out-Null
+      New-Item -ItemType SymbolicLink -Path $DestinationPath -Target $SourcePath -ErrorAction Stop | Out-Null
       Write-LogLine -Tag "create" -Message "symlink created." -Color Green -Indent 4
-      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode
+      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
     }
     "junction" {
-      New-Item -ItemType Junction -Path $DestinationPath -Target $SourcePath | Out-Null
+      New-Item -ItemType Junction -Path $DestinationPath -Target $SourcePath -ErrorAction Stop | Out-Null
       Write-LogLine -Tag "create" -Message "junction created." -Color Green -Indent 4
-      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode
+      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
     }
     "shortcut" {
       $scParams = @{ Path = $DestinationPath; TargetPath = $SourcePath }
@@ -1557,7 +1541,7 @@ function Invoke-CreateTrackedLinkForMode {
       if ($null -ne $scWinStyle) { $scParams.WindowStyle = Resolve-WindowStyle $scWinStyle }
       New-WindowsShortcut @scParams
       Write-LogLine -Tag "create" -Message "shortcut created." -Color Green -Indent 4
-      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode
+      Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
     }
     default {
       throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, seed, shortcut)"
