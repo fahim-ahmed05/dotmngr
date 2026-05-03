@@ -1,6 +1,6 @@
 # Dot Manager
 
-A simple PowerShell script that manages dotfiles scattered across your system using a JSON manifest. It can create links (symlink/junction/hardlink) and sync folder/file pairs by comparing hashes and using modified time to choose the winning side (`sync`). It also keeps a state file so removed/moved entries in your config don’t leave stale links behind.
+A simple PowerShell script that manages dotfiles scattered across your system using a JSON manifest. It can create links (symlink/junction/hardlink) or manage one-way file/directory seeding (`seed`). It also keeps a state file so removed/moved entries in your config don’t leave stale links behind.
 
 ## Features
 
@@ -9,9 +9,9 @@ A simple PowerShell script that manages dotfiles scattered across your system us
   * `symlink` (file/dir)
   * `junction` (dir)
   * `hardlink` (file)
-  * `sync` (hash equality check, newer side wins, overwritten files go to trash)
+  * `seed` (copy only if destination doesn’t exist)
   * `shortcut` (Windows `.lnk` shortcut)
-  
+
 * Safe cleanup: If an entry is removed from config, it removes the destination **only if it still matches what the script created**
 * State tracking stored under: `~\.config\dotmngr\state.<configName>.json`
 
@@ -239,18 +239,14 @@ Creates a hardlink at `to` pointing to `from`.
 * Files only (cannot hardlink directories)
 * Source and destination must be on the same drive/volume
 
-### `sync`
+### `seed`
 
-Synchronizes file and folder pairs by comparing hashes first, then using modified time to choose the winning side.
+Copies `from → to` only if `to` does not already exist.
 
-* If hashes match, it skips the pair
-* If hashes differ, the newer side wins
-* For files, the losing file is moved to trash before overwrite
-* For folders, changed files are updated incrementally instead of recopying the entire tree
-* Uses PowerShell copy operations for the incremental folder sync, not `robocopy`
-* More reliable than timestamp-only comparison because hash equality avoids false positives
-* Avoid using it when both sides can be edited in parallel unless you are okay with last-write-wins behavior
+* Once `to` exists, it is never changed again by dotmngr
+* Useful for “seed a default config” behavior
 
+ 
 ### `shortcut`
 
 Creates a Windows `.lnk` shortcut at `to` pointing to `from`.
@@ -300,10 +296,7 @@ For link modes (`symlink`, `junction`, `hardlink`, `shortcut`):
 * If `to` exists but is not the correct managed link → it is moved to `trashDir` (if enabled) and replaced
 * If `from` is missing but `to` exists as a normal file/folder (`symlink`, `junction`, `hardlink` only), dotmngr moves `to` back to `from`, then creates the link at `to`
 
-For transfer modes:
-
-* `sync` compares hashes, picks the newer side, and updates only the changed files; overwritten files go to trash
-
+* `seed` does nothing if `to` exists
 
 ## Admin Elevation
 
@@ -364,8 +357,8 @@ it means the current destination no longer matches the tracked source/mode from 
 * Prefer `junction` for folders on Windows (it’s the most painless)
 * Use `symlink` when you specifically want a true symlink
 * Use `hardlink` for single files you want to appear in multiple places on the same drive
+* Use `seed` for apps that generate/modify configs and you only want to seed it once
 * Use `shortcut` to place `.lnk` files on the Desktop or Start Menu without touching the real application files
- 
 
 ## Troubleshooting
 
@@ -375,7 +368,7 @@ Enable Developer Mode or run PowerShell as Administrator.
 
 ### Hardlink fails
 
-Hardlinks only work for files on the same drive. If your dotfiles repo is on `D:` and `to` is on `C:`, use `symlink` or `sync` instead.
+Hardlinks only work for files on the same drive. If your dotfiles repo is on `D:` and `to` is on `C:`, use `symlink` or `junction` instead.
 
 ### Robocopy returns weird exit codes
 

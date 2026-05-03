@@ -26,7 +26,7 @@ Modes:
   symlink   - Symbolic link (file/dir)
   junction  - Junction (dir)
   hardlink  - Hard link (file, same volume)
-  sync      - Copy newer side to older side by modified time (file/dir)
+  seed      - Copy only if destination doesn’t exist (file/dir)
   shortcut  - Windows .lnk shortcut (file/dir)
 Switches:
   -Unlink   Remove all managed links for the selected packages
@@ -227,144 +227,7 @@ function Get-LinkTargetPath {
   }
 }
 
-function Get-PathHashUtc {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$Path
-  )
-
-  if (!(Test-Path -LiteralPath $Path)) { return $null }
-
-  $item = Get-Item -LiteralPath $Path -Force
-
-  if ($item.PSIsContainer) {
-    $hasher = [System.Security.Cryptography.SHA256]::Create()
-    $hashString = @()
-    $rootResolved = (Resolve-DotmngrPath -Path $Path).TrimEnd("\")
-
-    $hashString += "D|."
-
-    Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue |
-    Sort-Object -Property FullName |
-    ForEach-Object {
-      $relativePath = $_.FullName.Substring($rootResolved.Length).TrimStart("\")
-      if (-not $_.PSIsContainer) {
-        $fileHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
-        $hashString += "F|$relativePath|$fileHash"
-      }
-      else {
-        $hashString += "D|$relativePath"
-      }
-    }
-
-    $combined = $hashString -join "`n"
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($combined)
-    $hashBytes = $hasher.ComputeHash($bytes)
-    $hashHex = ($hashBytes | ForEach-Object { $_.ToString('x2') }) -join ''
-    return $hashHex
-  }
-  else {
-    $hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
-    return $hash
-  }
-}
-
-function Get-PathNewestWriteTimeUtc {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$Path
-  )
-
-  if (!(Test-Path -LiteralPath $Path)) { return $null }
-
-  $item = Get-Item -LiteralPath $Path -Force
-  $newest = $item.LastWriteTimeUtc
-
-  if ($item.PSIsContainer) {
-    foreach ($child in Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue) {
-      if ($child.LastWriteTimeUtc -gt $newest) {
-        $newest = $child.LastWriteTimeUtc
-      }
-    }
-  }
-
-  return $newest
-}
-
-function Get-RelativePathFromRoot {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$RootPath,
-
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$ChildPath
-  )
-
-  $rootResolved = (Resolve-DotmngrPath -Path $RootPath).TrimEnd("\")
-  $childResolved = Resolve-DotmngrPath -Path $ChildPath
-
-  if ($childResolved.Length -le $rootResolved.Length) { return "" }
-
-  $prefix = $rootResolved + "\"
-  if ($childResolved.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-    return $childResolved.Substring($prefix.Length)
-  }
-
-  return $childResolved
-}
-
-function Get-PathTreeEntries {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$RootPath
-  )
-
-  $entries = @()
-  if (!(Test-Path -LiteralPath $RootPath)) { return $entries }
-
-  $entries += [pscustomobject]@{
-    RelativePath     = "."
-    FullPath         = (Resolve-DotmngrPath -Path $RootPath)
-    IsContainer      = $true
-    Hash             = $null
-    LastWriteTimeUtc = (Get-Item -LiteralPath $RootPath -Force).LastWriteTimeUtc
-  }
-
-  Get-ChildItem -LiteralPath $RootPath -Force -Recurse -ErrorAction SilentlyContinue |
-  Sort-Object -Property FullName |
-  ForEach-Object {
-    $relativePath = Get-RelativePathFromRoot -RootPath $RootPath -ChildPath $_.FullName
-    if ($_.PSIsContainer) {
-      $entries += [pscustomobject]@{
-        RelativePath     = $relativePath
-        FullPath         = $_.FullName
-        IsContainer      = $true
-        Hash             = $null
-        LastWriteTimeUtc = $_.LastWriteTimeUtc
-      }
-    }
-    else {
-      $entries += [pscustomobject]@{
-        RelativePath     = $relativePath
-        FullPath         = $_.FullName
-        IsContainer      = $false
-        Hash             = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
-        LastWriteTimeUtc = $_.LastWriteTimeUtc
-      }
-    }
-  }
-
-  return $entries
-}
+# Path-hash and tree helpers removed (not used).
 
 function Remove-DestinationForOverwrite {
   [CmdletBinding()]
@@ -416,93 +279,6 @@ function Remove-DestinationForOverwrite {
 
   Write-LogLine -Tag "error" -Message "could not remove path, skipping." -Color Red -Indent 4
   return $false
-}
-
-function Remove-PathBeforeCopy {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$Path,
-
-    [Parameter(Mandatory = $true)]
-    [bool]$UseTrash,
-
-    [Parameter()]
-    [string]$TrashDir = ""
-  )
-
-  return (Remove-DestinationForOverwrite -Path $Path -UseTrash $UseTrash -TrashDir $TrashDir)
-}
-
-function Invoke-SyncTreeIncremental {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$SourceRoot,
-
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$DestinationRoot,
-
-    [Parameter(Mandatory = $true)]
-    [bool]$UseTrash,
-
-    [Parameter()]
-    [string]$TrashDir = ""
-  )
-
-  $sourceEntries = Get-PathTreeEntries -RootPath $SourceRoot
-  $destinationRootExists = Test-Path -LiteralPath $DestinationRoot
-
-  # Create directory structure first
-  foreach ($entry in $sourceEntries | Where-Object { $_.IsContainer -and $_.RelativePath -ne "." }) {
-    $targetDir = Join-Path $DestinationRoot $entry.RelativePath
-    
-    if (Test-Path -LiteralPath $targetDir -PathType Leaf) {
-      if (-not (Remove-DestinationForOverwrite -Path $targetDir -UseTrash $UseTrash -TrashDir $TrashDir)) {
-        return $false
-      }
-    }
-    New-DirectoryIfMissing -Path $targetDir
-  }
-
-  # Sync files incrementally - copy only when missing or hash differs
-  foreach ($entry in $sourceEntries | Where-Object { -not $_.IsContainer }) {
-    $targetPath = Join-Path $DestinationRoot $entry.RelativePath
-    $targetExists = Test-Path -LiteralPath $targetPath
-
-    # Type mismatch: destination is a directory, not a file
-    if ($targetExists -and (Test-Path -LiteralPath $targetPath -PathType Container)) {
-      if (-not (Remove-DestinationForOverwrite -Path $targetPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
-        return $false
-      }
-      $targetExists = $false
-    }
-
-    # Skip if file exists and hash matches
-    if ($targetExists) {
-      $targetHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
-      if ($targetHash -eq $entry.Hash) {
-        continue
-      }
-      # Hash mismatch: remove old and copy new
-      if (-not (Remove-DestinationForOverwrite -Path $targetPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
-        return $false
-      }
-    }
-
-    # Copy missing or changed file
-    New-ParentDirectoryIfMissing -Path $targetPath
-    Copy-Item -LiteralPath $entry.FullPath -Destination $targetPath -Force
-  }
-
-  if (-not $destinationRootExists) {
-    New-DirectoryIfMissing -Path $DestinationRoot
-  }
-
-  return $true
 }
 
 function Move-ItemToTrashFolder {
@@ -782,9 +558,9 @@ function Test-ShouldRemoveManagedLink {
     return ($targetResolved -eq $from)
   }
 
-  if ($mode -eq "sync") {
-    return $false
-  }
+  # Unknown modes are treated conservatively.
+
+  # We do not auto-remove seed destinations.
   return $false
 }
 
@@ -830,19 +606,9 @@ function Get-TrackedItemStatus {
       if ($targetResolved -eq $Source) { return "OK" }
       return "DRIFTED"
     }
-    "sync" {
-      $sourceIsContainer = Test-Path -LiteralPath $Source -PathType Container
-      $destinationIsContainer = Test-Path -LiteralPath $Destination -PathType Container
-      if ($sourceIsContainer -ne $destinationIsContainer) { return "DRIFTED" }
-
-      $sourceHash = Get-PathHashUtc -Path $Source
-      $destinationHash = Get-PathHashUtc -Path $Destination
-      if ($null -eq $sourceHash -or $null -eq $destinationHash) { return "DRIFTED" }
-      if ($sourceHash -eq $destinationHash) { return "OK" }
-      return "DRIFTED"
-    }
+    # no special handling for transfer modes.
     default {
-      # For unknown modes, existence is the best available signal.
+      # For seed and unknown modes, existence is the best available signal.
       return "OK"
     }
   }
@@ -1082,8 +848,8 @@ function Invoke-TrackedEntryCleanup {
   }
 
   $entryMode = ([string]($StateEntry | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue)).ToLower()
-  if ($entryMode -eq "sync") {
-    Write-LogLine -Tag "untrack" -Message "copy mode; leaving paths untouched." -Color Cyan -Indent 4
+  if ($entryMode -eq "seed") {
+    Write-LogLine -Tag "untrack" -Message "seed mode; leaving paths untouched." -Color Cyan -Indent 4
     return $true
   }
 
@@ -1230,135 +996,40 @@ function Set-TrackedLinkState {
   return $true
 }
 
-
-
-function Copy-PathByHash {
+function Invoke-SeedApplyIfNeeded {
   [CmdletBinding()]
   param(
     [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
+    [string]$Mode,
+
+    [Parameter(Mandatory = $true)]
     [string]$SourcePath,
 
     [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$DestinationPath,
-
-    [Parameter(Mandatory = $true)]
-    [bool]$UseTrash,
-
-    [Parameter()]
-    [string]$TrashDir = ""
+    [string]$DestinationPath
   )
 
-  $sourceIsContainer = Test-Path -LiteralPath $SourcePath -PathType Container
-  $destinationExists = Test-Path -LiteralPath $DestinationPath
+  if ($Mode -ne "seed") { return $false }
 
-  # Type mismatch validation
-  if ($destinationExists) {
-    $destIsContainer = Test-Path -LiteralPath $DestinationPath -PathType Container
-    if ($sourceIsContainer -ne $destIsContainer) {
-      $sourceType = if ($sourceIsContainer) { "directory" } else { "file" }
-      $destType = if ($destIsContainer) { "directory" } else { "file" }
-      throw "source is $sourceType but destination is $destType"
-    }
-
-    # Remove existing destination
-    if (-not (Remove-DestinationForOverwrite -Path $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir)) {
-      return $false
-    }
+  if (Test-Path -LiteralPath $DestinationPath) {
+    Write-LogLine -Tag "skip" -Message "destination exists, skipping (seed)." -Color Green -Indent 4
+    return $true
   }
 
-  # Copy source to destination
-  if ($sourceIsContainer) {
+  if (Test-Path -LiteralPath $SourcePath -PathType Container) {
     New-DirectoryIfMissing -Path $DestinationPath
     Invoke-RobocopySafe -Source $SourcePath -Destination $DestinationPath -Arguments @("/E", "/R:1", "/W:1", "/NFL", "/NDL")
+    Write-LogLine -Tag "create" -Message "directory copied once." -Color Green -Indent 4
   }
   else {
-    New-ParentDirectoryIfMissing -Path $DestinationPath
     Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+    Write-LogLine -Tag "create" -Message "file copied once." -Color Green -Indent 4
   }
 
   return $true
 }
 
-function Invoke-SyncHashMode {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$SourcePath,
-
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$DestinationPath,
-
-    [Parameter(Mandatory = $true)]
-    [bool]$UseTrash,
-
-    [Parameter()]
-    [string]$TrashDir = ""
-  )
-
-  $sourceExists = Test-Path -LiteralPath $SourcePath
-  $destinationExists = Test-Path -LiteralPath $DestinationPath
-
-  if (-not $sourceExists -and -not $destinationExists) {
-    Write-LogLine -Tag "warn" -Message "both sync paths are missing, skipping." -Color Yellow -Indent 4
-    return $false
-  }
-
-  if ($sourceExists -and -not $destinationExists) {
-    Write-LogLine -Tag "copy" -Message "destination missing, copying source to destination." -Color Green -Indent 4
-    return (Copy-PathByHash -SourcePath $SourcePath -DestinationPath $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir)
-  }
-
-  if (-not $sourceExists -and $destinationExists) {
-    Write-LogLine -Tag "copy" -Message "source missing, copying destination to source." -Color Green -Indent 4
-    return (Copy-PathByHash -SourcePath $DestinationPath -DestinationPath $SourcePath -UseTrash $UseTrash -TrashDir $TrashDir)
-  }
-
-  $sourceIsContainer = Test-Path -LiteralPath $SourcePath -PathType Container
-  $destinationIsContainer = Test-Path -LiteralPath $DestinationPath -PathType Container
-  if ($sourceIsContainer -ne $destinationIsContainer) {
-    Write-LogLine -Tag "warn" -Message "sync mode requires both paths to be the same kind (file or directory), skipping." -Color Yellow -Indent 4
-    return $false
-  }
-
-  $sourceHash = Get-PathHashUtc -Path $SourcePath
-  $destinationHash = Get-PathHashUtc -Path $DestinationPath
-  if ($null -eq $sourceHash -or $null -eq $destinationHash) {
-    Write-LogLine -Tag "warn" -Message "could not compute hashes for sync mode, skipping." -Color Yellow -Indent 4
-    return $false
-  }
-
-  if ($sourceHash -eq $destinationHash) {
-    Write-LogLine -Tag "skip" -Message "sync pair hashes match." -Color Green -Indent 4
-    return $true
-  }
-
-  $sourceTime = Get-PathNewestWriteTimeUtc -Path $SourcePath
-  $destinationTime = Get-PathNewestWriteTimeUtc -Path $DestinationPath
-  if ($null -eq $sourceTime -or $null -eq $destinationTime) {
-    Write-LogLine -Tag "warn" -Message "could not compare modified times for sync mode, skipping." -Color Yellow -Indent 4
-    return $false
-  }
-
-  $sourceWins = $sourceTime -ge $destinationTime
-  $winnerPath = if ($sourceWins) { $SourcePath } else { $DestinationPath }
-  $loserPath = if ($sourceWins) { $DestinationPath } else { $SourcePath }
-
-  if (Test-Path -LiteralPath $winnerPath -PathType Container) {
-    Write-LogLine -Tag "copy" -Message ("{0} is newer, incrementally syncing folder." -f (if ($sourceWins) { "source" } else { "destination" })) -Color Green -Indent 4
-    return (Invoke-SyncTreeIncremental -SourceRoot $winnerPath -DestinationRoot $loserPath -UseTrash $UseTrash -TrashDir $TrashDir)
-  }
-
-  Write-LogLine -Tag "copy" -Message ("{0} is newer, copying file to the other side." -f (if ($sourceWins) { "source" } else { "destination" })) -Color Green -Indent 4
-  if ($sourceWins) {
-    return (Copy-PathByHash -SourcePath $SourcePath -DestinationPath $DestinationPath -UseTrash $UseTrash -TrashDir $TrashDir)
-  }
-
-  return (Copy-PathByHash -SourcePath $DestinationPath -DestinationPath $SourcePath -UseTrash $UseTrash -TrashDir $TrashDir)
-}
+# copy-by-hash and transfer helpers removed
 
 function Get-ApplyDestinationDecision {
   [CmdletBinding()]
@@ -1449,7 +1120,7 @@ function Get-ApplyDestinationDecision {
     return $result
   }
 
-  throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, shortcut)"
+  throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, seed, shortcut)"
 }
 
 function Invoke-CreateTrackedLinkForMode {
@@ -1510,7 +1181,7 @@ function Invoke-CreateTrackedLinkForMode {
       Set-TrackedLinkState -LinksObject $LinksObject -DestinationPath $ToKey -SourcePath $SourcePath -Mode $Mode | Out-Null
     }
     default {
-      throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, shortcut)"
+      throw "Unknown mode '$Mode' (supported: hardlink, symlink, junction, seed, shortcut)"
     }
   }
 }
@@ -1972,6 +1643,12 @@ foreach ($pkg in $selectedPackages) {
       $desiredModeVal = $desired[$toKey] | Select-Object -ExpandProperty mode -ErrorAction SilentlyContinue
       $desiredMode = if ($desiredModeVal) { ([string]$desiredModeVal).ToLower() } else { "" }
 
+      if ($desiredMode -eq "seed") {
+        # seed is intentionally untracked; drop any stale tracked state entry.
+        Write-LogLine -Tag "untrack" -Message ("{0} (seed mode)" -f $toKey) -Color Cyan -Indent 2
+        $links.PSObject.Properties.Remove($toKey)
+        $packageWasModified = $true
+      }
       continue
     }
 
@@ -2013,14 +1690,7 @@ foreach ($pkg in $selectedPackages) {
       try {
         Write-ItemHeader -Mode $mode -From $from -To $to
 
-        if ($mode -eq "sync") {
-          if (Invoke-SyncHashMode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir) {
-            if (Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode) {
-              $packageWasModified = $true
-            }
-          }
-          continue
-        }
+        # proceed with normal handling
 
         # Don't create parent directories here; elevation will handle creation where needed.
 
@@ -2031,7 +1701,9 @@ foreach ($pkg in $selectedPackages) {
           }
         }
 
-        # seed mode removed; no per-item seed handling
+        if (Invoke-SeedApplyIfNeeded -Mode $mode -SourcePath $from -DestinationPath $to) {
+          continue
+        }
 
         # Pre-flight decision
         $decision = Get-ApplyDestinationDecision -Mode $mode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir
@@ -2082,14 +1754,7 @@ foreach ($pkg in $selectedPackages) {
     try {
       Write-ItemHeader -Mode $mode -From $from -To $to
 
-      if ($mode -eq "sync") {
-        if (Invoke-SyncHashMode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir) {
-          if (Set-TrackedLinkState -LinksObject $links -DestinationPath $toKey -SourcePath $from -Mode $mode) {
-            $packageWasModified = $true
-          }
-        }
-        continue
-      }
+      # proceed with normal handling
 
       New-ParentDirectoryIfMissing -Path $to
 
@@ -2100,7 +1765,9 @@ foreach ($pkg in $selectedPackages) {
         }
       }
 
-      # seed mode removed; no per-item seed handling
+      if (Invoke-SeedApplyIfNeeded -Mode $mode -SourcePath $from -DestinationPath $to) {
+        continue
+      }
 
       # Link modes (tracked)
       $decision = Get-ApplyDestinationDecision -Mode $mode -SourcePath $from -DestinationPath $to -UseTrash $useTrash -TrashDir $trashDir
