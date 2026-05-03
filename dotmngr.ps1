@@ -1720,11 +1720,12 @@ if ($Unlink -or $Relink) {
   if ($unlinkStateWasModified) {
     $state.updated = (Get-Date).ToString("o")
   }
-  $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $statePath -Encoding UTF8
-  Write-Host ""
-  Write-LogLine -Tag "save" -Message ("state saved: {0}" -f $statePath) -Color Green
-
-  if ($Unlink) {
+  
+  # Only save state immediately if doing -Unlink without -Relink
+  if ($Unlink -and -not $Relink) {
+    $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Write-Host ""
+    Write-LogLine -Tag "save" -Message ("state saved: {0}" -f $statePath) -Color Green
     return
   }
 }
