@@ -705,7 +705,7 @@ $globalTrashDirVal =$config.global.PSObject.Properties['trashDir']?.Value
 
 if ($globalTrash) {
   if ([string]::IsNullOrWhiteSpace([string]$globalTrashDirVal)) {
-    $globalTrashDir = Resolve-DotmngrPath -Path "%USERPROFILE%\Trash\dotmngr"
+    $globalTrashDir = Resolve-DotmngrPath -Path "%USERPROFILE%\trash\dotmngr"
   }
   else {
     $globalTrashDir = Resolve-DotmngrPath -Path ([string]$globalTrashDirVal)
